@@ -25,7 +25,7 @@ export function backendEnabled() {
 
 export async function backendMe() {
   try {
-    const result = await request<{ user: BackendUser }>("/api/auth/me");
+    const result = await request<{ user: BackendUser }>("/api/me");
     return result.user;
   } catch (error) {
     if (error instanceof Error && error.message === "Sign in to continue.") return null;
@@ -34,14 +34,14 @@ export async function backendMe() {
 }
 
 export function backendLogin(email: string, password: string) {
-  return request<{ user: BackendUser }>("/api/auth/login", {
+  return request<{ user: BackendUser }>("/api/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
 }
 
 export function backendLogout() {
-  return request<{ ok: true }>("/api/auth/logout", { method: "POST" });
+  return request<{ ok: true }>("/api/logout", { method: "POST" });
 }
 
 export function toLocalUser(user: BackendUser) {

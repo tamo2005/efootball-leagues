@@ -43,7 +43,7 @@ app.get("/api/health", asyncRoute(async (_request, response) => {
   response.json({ service: "efootball-leagues-api", database: await databaseHealth(), now: Date.now() });
 }));
 
-app.post("/api/auth/login", asyncRoute(async (request, response) => {
+const loginRoute = asyncRoute(async (request, response) => {
   if (!isDatabaseConfigured()) {
     response.status(503).json({ error: "DATABASE_NOT_CONFIGURED", message: "The API needs DATABASE_URL before account sign-in can be enabled." });
     return;
@@ -65,18 +65,24 @@ app.post("/api/auth/login", asyncRoute(async (request, response) => {
   }
   await createSession(email, response);
   response.json({ user: await findUserByEmail(email) });
-}));
+});
+app.post("/api/auth/login", loginRoute);
+app.post("/api/login", loginRoute);
 
-app.get("/api/auth/me", asyncRoute(async (request, response) => {
+const meRoute = asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
   response.json({ user });
-}));
+});
+app.get("/api/auth/me", meRoute);
+app.get("/api/me", meRoute);
 
-app.post("/api/auth/logout", asyncRoute(async (request, response) => {
+const logoutRoute = asyncRoute(async (request, response) => {
   await clearSession(request, response);
   response.json({ ok: true });
-}));
+});
+app.post("/api/auth/logout", logoutRoute);
+app.post("/api/logout", logoutRoute);
 
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
