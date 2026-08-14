@@ -30,9 +30,14 @@ function requireAdmin(request: Request, response: Response) {
   return user;
 }
 
-app.use(asyncRoute(async (request, _response) => {
-  (request as Request & { user?: CurrentUser | null }).user = await getCurrentUser(request);
-}));
+app.use(async (request, _response, next) => {
+  try {
+    (request as Request & { user?: CurrentUser | null }).user = await getCurrentUser(request);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get("/api/health", asyncRoute(async (_request, response) => {
   response.json({ service: "efootball-leagues-api", database: await databaseHealth(), now: Date.now() });

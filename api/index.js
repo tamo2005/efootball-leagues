@@ -281,9 +281,14 @@ function requireAdmin(request, response) {
   }
   return user;
 }
-app.use(asyncRoute(async (request, _response) => {
-  request.user = await getCurrentUser(request);
-}));
+app.use(async (request, _response, next) => {
+  try {
+    request.user = await getCurrentUser(request);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 app.get("/api/health", asyncRoute(async (_request, response) => {
   response.json({ service: "efootball-leagues-api", database: await databaseHealth(), now: Date.now() });
 }));
