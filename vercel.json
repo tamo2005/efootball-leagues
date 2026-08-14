@@ -1,10 +1,13 @@
 {
-  "buildCommand": "pnpm build",
+  "buildCommand": "pnpm build && pnpm exec esbuild server/vercel-api.ts --platform=node --packages=external --bundle --format=esm --outfile=api/index.js && cp api/index.js 'api/[...path].js'",
   "outputDirectory": "dist/public",
   "installCommand": "pnpm install",
   "framework": "vite",
   "functions": {
-    "api/index.ts": {
+    "api/index.js": {
+      "maxDuration": 10
+    },
+    "api/[...path].js": {
       "maxDuration": 10
     }
   }
