@@ -16,13 +16,19 @@ function getPool() {
     throw new Error("DATABASE_URL is not configured. Add a MySQL or TiDB connection string before using the API.");
   }
   if (!pool) {
+    const connectionUrl = new URL(process.env.DATABASE_URL);
     pool = mysql.createPool({
-      uri: process.env.DATABASE_URL,
+      host: connectionUrl.hostname,
+      port: Number(connectionUrl.port || 3306),
+      user: decodeURIComponent(connectionUrl.username),
+      password: decodeURIComponent(connectionUrl.password),
+      database: connectionUrl.pathname.replace(/^\//, "") || void 0,
       connectionLimit: Number(process.env.DB_POOL_SIZE || 5),
       waitForConnections: true,
       enableKeepAlive: true,
+      connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT || 7e3),
       namedPlaceholders: true,
-      ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : void 0
+      ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false, minVersion: "TLSv1.2" } : void 0
     });
   }
   return pool;

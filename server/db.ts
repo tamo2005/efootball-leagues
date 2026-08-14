@@ -12,13 +12,19 @@ export function getPool() {
   }
 
   if (!pool) {
+    const connectionUrl = new URL(process.env.DATABASE_URL);
     pool = mysql.createPool({
-      uri: process.env.DATABASE_URL,
+      host: connectionUrl.hostname,
+      port: Number(connectionUrl.port || 3306),
+      user: decodeURIComponent(connectionUrl.username),
+      password: decodeURIComponent(connectionUrl.password),
+      database: connectionUrl.pathname.replace(/^\//, "") || undefined,
       connectionLimit: Number(process.env.DB_POOL_SIZE || 5),
       waitForConnections: true,
       enableKeepAlive: true,
+      connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT || 7000),
       namedPlaceholders: true,
-      ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
+      ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false, minVersion: "TLSv1.2" } : undefined,
     });
   }
 
