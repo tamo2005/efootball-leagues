@@ -107,3 +107,36 @@ The current implementation is intentionally local-first and is ideal for validat
 ## License
 
 This project is released under the MIT license declared in [`package.json`](package.json).
+
+
+## Production backend and database
+
+The application now includes an Express API under `server/` and a Vercel serverless entrypoint at `api/index.ts`. The database is MySQL 8+ or TiDB compatible and is initialized from [`database/schema.sql`](database/schema.sql). All business timestamps are stored as UTC epoch milliseconds.
+
+The `users.email` column is the primary key for identity. Each user has an `admin` or `player` role, and player accounts may belong to one team through `team_memberships`. Administrators can create teams and player accounts, generate a season schedule, review submitted results, and confirm official results. Players can sign in with their email, view their assigned fixtures, and submit results only for fixtures involving their team. Sessions are revocable database records stored behind an HttpOnly cookie.
+
+### Backend setup
+
+Copy `.env.example` to `.env` and provide a MySQL or TiDB `DATABASE_URL`. Then run:
+
+```bash
+pnpm db:migrate
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com \
+BOOTSTRAP_ADMIN_NAME="League Administrator" \
+BOOTSTRAP_ADMIN_PASSWORD="use-a-strong-password" \
+pnpm db:bootstrap
+```
+
+Set `VITE_BACKEND_ENABLED=true` for the frontend build. In Vercel, configure `DATABASE_URL`, `DATABASE_SSL=true`, `DB_POOL_SIZE`, and `VITE_BACKEND_ENABLED=true` as project environment variables. The API exposes `/api/health`, `/api/auth/login`, `/api/auth/me`, `/api/auth/logout`, `/api/dashboard`, admin team/user/season operations, result submission and confirmation endpoints, standings, and player statistics.
+
+### Compatible scheduling and standings
+
+The schedule generator uses a round-robin circle method. It creates each pairing once, prevents a team from appearing twice on the same matchday, and supports an odd number of teams by inserting a bye. Official standings are calculated only from confirmed matches using points, goal difference, goals scored, wins, direct head-to-head points, and a stable team-name fallback. Schedule and tie-breaker behavior is covered by the backend test suite.
+
+Run the checks with:
+
+```bash
+pnpm vitest run --config vitest.config.ts
+pnpm check
+pnpm build
+```

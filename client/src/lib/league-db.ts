@@ -1,4 +1,6 @@
 export type MatchStatus = "SCHEDULED" | "PENDING" | "CONFIRMED" | "DISPUTED";
+export type UserRole = "admin" | "player";
+export type TiebreakerRule = "points" | "goalDifference" | "goalsFor" | "headToHead" | "wins";
 
 export type League = {
   id: string;
@@ -16,6 +18,16 @@ export type Team = {
   shortName: string;
   manager: string;
   accent: string;
+};
+
+export type UserAccount = {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  teamId?: string;
+  passwordHash: string;
+  active: boolean;
 };
 
 export type Goal = {
@@ -50,8 +62,11 @@ export type Activity = {
 export type LeagueDatabase = {
   league: League;
   teams: Team[];
+  users: UserAccount[];
   matches: Match[];
   activities: Activity[];
+  currentUserId: string | null;
+  tiebreakers: TiebreakerRule[];
 };
 
 export type Standing = Team & {
@@ -66,7 +81,21 @@ export type Standing = Team & {
   form: ("W" | "D" | "L")[];
 };
 
-export const DB_KEY = "eleague-manager-database-v1";
+export type PlayerStat = {
+  name: string;
+  teamId: string;
+  teamName: string;
+  officialGoals: number;
+  pendingGoals: number;
+  totalGoals: number;
+  appearances: number;
+  averageMinute: number;
+  lastMinute: number;
+  hatTricks: number;
+};
+
+export const DB_KEY = "eleague-manager-database-v2";
+export const DEFAULT_TIEBREAKERS: TiebreakerRule[] = ["points", "goalDifference", "goalsFor", "headToHead", "wins"];
 
 const seedTeams: Team[] = [
   { id: "north-london", name: "North London", shortName: "NLD", manager: "Alex Morgan", accent: "#9dd36a" },
@@ -96,6 +125,15 @@ function readableDate(date: string) {
 
 export function makeId(prefix = "id") {
   return `${prefix}-${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`}`;
+}
+
+export function hashPasscode(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 export function generateFixtures(teamIds: string[], matchesPerDay: number, startDate = dateWithOffset(0)): Match[] {
@@ -147,7 +185,7 @@ function applySeedResults(matches: Match[]): Match[] {
       homeScore: seed.homeScore,
       awayScore: seed.awayScore,
       status: seed.status,
-      submittedBy: "home-team",
+      submittedBy: "player-sam",
       submittedAt: new Date().toISOString(),
       goals: seed.goals.map(([teamId, playerName, minute]) => ({ id: makeId("goal"), teamId, playerName, minute })),
     };
@@ -167,12 +205,31 @@ export function createSeedDatabase(): LeagueDatabase {
       startDate: dateWithOffset(-2),
     },
     teams: seedTeams,
+    users: [
+      { id: "admin-alex", name: "Alex Morgan", email: "alex@eleague.local", role: "admin", passwordHash: hashPasscode("admin123"), active: true },
+      { id: "player-sam", name: "Sam Carter", email: "sam@eleague.local", role: "player", teamId: "river-city", passwordHash: hashPasscode("player123"), active: true },
+      { id: "player-jordan", name: "Jordan Lee", email: "jordan@eleague.local", role: "player", teamId: "blue-harbor", passwordHash: hashPasscode("player123"), active: true },
+    ],
     matches,
+    currentUserId: "admin-alex",
+    tiebreakers: [...DEFAULT_TIEBREAKERS],
     activities: [
-      { id: "activity-1", kind: "result", title: "Alex submitted a result", detail: "East End 1–0 Golden State · awaiting confirmation", time: "12 min ago" },
-      { id: "activity-2", kind: "leaderboard", title: "Messi moved into first", detail: "4 goals · North London", time: "36 min ago" },
+      { id: "activity-1", kind: "result", title: "Sam submitted a result", detail: "East End 1–0 Golden State · awaiting confirmation", time: "12 min ago" },
+      { id: "activity-2", kind: "leaderboard", title: "Messi moved into first", detail: "4 official goals · North London / Blue Harbor", time: "36 min ago" },
       { id: "activity-3", kind: "update", title: "Fixtures generated", detail: "28 matches across 7 matchdays", time: "Yesterday" },
     ],
+  };
+}
+
+function normalizeDatabase(parsed: Partial<LeagueDatabase>): LeagueDatabase {
+  const seed = createSeedDatabase();
+  return {
+    ...seed,
+    ...parsed,
+    users: Array.isArray(parsed.users) && parsed.users.length ? parsed.users : seed.users,
+    currentUserId: parsed.currentUserId === undefined ? seed.currentUserId : parsed.currentUserId,
+    tiebreakers: Array.isArray(parsed.tiebreakers) && parsed.tiebreakers.length ? parsed.tiebreakers : seed.tiebreakers,
+    activities: Array.isArray(parsed.activities) ? parsed.activities : seed.activities,
   };
 }
 
@@ -181,9 +238,9 @@ export function getDatabase(): LeagueDatabase {
   try {
     const stored = window.localStorage.getItem(DB_KEY);
     if (!stored) return createSeedDatabase();
-    const parsed = JSON.parse(stored) as LeagueDatabase;
+    const parsed = JSON.parse(stored) as Partial<LeagueDatabase>;
     if (!parsed.league || !Array.isArray(parsed.teams) || !Array.isArray(parsed.matches)) return createSeedDatabase();
-    return parsed;
+    return normalizeDatabase(parsed);
   } catch {
     return createSeedDatabase();
   }
@@ -193,12 +250,42 @@ export function saveDatabase(database: LeagueDatabase) {
   if (typeof window !== "undefined") window.localStorage.setItem(DB_KEY, JSON.stringify(database));
 }
 
+export function authenticateUser(database: LeagueDatabase, email: string, passcode: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const hash = hashPasscode(passcode);
+  return database.users.find((user) => user.active && user.email.toLowerCase() === normalizedEmail && user.passwordHash === hash) ?? null;
+}
+
+export function currentUser(database: LeagueDatabase) {
+  return database.users.find((user) => user.id === database.currentUserId && user.active) ?? null;
+}
+
+export function canSubmitMatch(user: UserAccount | null, match: Match) {
+  if (!user || match.status === "CONFIRMED") return false;
+  return user.role === "admin" || user.teamId === match.homeTeamId || user.teamId === match.awayTeamId;
+}
+
+export function canConfirmMatch(user: UserAccount | null, match: Match) {
+  return Boolean(user?.role === "admin" && (match.status === "PENDING" || match.status === "DISPUTED"));
+}
+
 export function teamById(teams: Team[], id: string) {
   return teams.find((team) => team.id === id);
 }
 
 export function formatMatchDate(date: string) {
   return readableDate(date);
+}
+
+function headToHeadPoints(database: LeagueDatabase, firstId: string, secondId: string) {
+  let points = 0;
+  database.matches.filter((match) => match.status === "CONFIRMED" && match.homeScore !== null && match.awayScore !== null && ((match.homeTeamId === firstId && match.awayTeamId === secondId) || (match.homeTeamId === secondId && match.awayTeamId === firstId))).forEach((match) => {
+    const firstIsHome = match.homeTeamId === firstId;
+    const firstScore = firstIsHome ? match.homeScore ?? 0 : match.awayScore ?? 0;
+    const secondScore = firstIsHome ? match.awayScore ?? 0 : match.homeScore ?? 0;
+    points += firstScore === secondScore ? 1 : firstScore > secondScore ? 3 : 0;
+  });
+  return points;
 }
 
 export function calculateStandings(database: LeagueDatabase): Standing[] {
@@ -237,21 +324,43 @@ export function calculateStandings(database: LeagueDatabase): Standing[] {
     }
   });
 
-  return rows.map((team) => ({ ...team, goalDifference: team.goalsFor - team.goalsAgainst, form: team.form.slice(-5) })).sort((a, b) => b.points - a.points || b.goalDifference - a.goalDifference || b.goalsFor - a.goalsFor || a.name.localeCompare(b.name));
+  const rules = database.tiebreakers?.length ? database.tiebreakers : DEFAULT_TIEBREAKERS;
+  return rows.map((team) => ({ ...team, goalDifference: team.goalsFor - team.goalsAgainst, form: team.form.slice(-5) })).sort((a, b) => {
+    for (const rule of rules) {
+      const difference = rule === "points" ? b.points - a.points : rule === "goalDifference" ? b.goalDifference - a.goalDifference : rule === "goalsFor" ? b.goalsFor - a.goalsFor : rule === "wins" ? b.won - a.won : headToHeadPoints(database, b.id, a.id) - headToHeadPoints(database, a.id, b.id);
+      if (difference !== 0) return difference;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+export function livePlayerStats(database: LeagueDatabase): PlayerStat[] {
+  const totals = new Map<string, PlayerStat & { matchIds: Set<string>; minuteTotal: number }>();
+  database.matches.filter((match) => match.status === "CONFIRMED" || match.status === "PENDING" || match.status === "DISPUTED").forEach((match) => {
+    const goalsByPlayer = new Map<string, number>();
+    match.goals.forEach((goal) => {
+      const team = teamById(database.teams, goal.teamId);
+      const key = `${goal.playerName.toLowerCase()}-${goal.teamId}`;
+      const current = totals.get(key) ?? { name: goal.playerName, teamId: goal.teamId, teamName: team?.name ?? "Unknown", officialGoals: 0, pendingGoals: 0, totalGoals: 0, appearances: 0, averageMinute: 0, lastMinute: 0, hatTricks: 0, matchIds: new Set<string>(), minuteTotal: 0 };
+      current.totalGoals += 1;
+      current.minuteTotal += goal.minute;
+      current.lastMinute = Math.max(current.lastMinute, goal.minute);
+      current.matchIds.add(match.id);
+      if (match.status === "CONFIRMED") current.officialGoals += 1;
+      else current.pendingGoals += 1;
+      goalsByPlayer.set(key, (goalsByPlayer.get(key) ?? 0) + 1);
+      totals.set(key, current);
+    });
+    goalsByPlayer.forEach((count, key) => {
+      const current = totals.get(key);
+      if (current && count >= 3) current.hatTricks += 1;
+    });
+  });
+  return Array.from(totals.values()).map(({ matchIds, minuteTotal, ...stat }) => ({ ...stat, appearances: matchIds.size, averageMinute: stat.totalGoals ? Math.round(minuteTotal / stat.totalGoals) : 0 })).sort((a, b) => b.officialGoals - a.officialGoals || b.totalGoals - a.totalGoals || a.name.localeCompare(b.name));
 }
 
 export function leaderboard(database: LeagueDatabase) {
-  const totals = new Map<string, { name: string; teamId: string; goals: number; teamName: string }>();
-  database.matches.filter((match) => match.status === "CONFIRMED").forEach((match) => {
-    match.goals.forEach((goal) => {
-      const key = `${goal.playerName.toLowerCase()}-${goal.teamId}`;
-      const team = teamById(database.teams, goal.teamId);
-      const current = totals.get(key) ?? { name: goal.playerName, teamId: goal.teamId, goals: 0, teamName: team?.name ?? "Unknown" };
-      current.goals += 1;
-      totals.set(key, current);
-    });
-  });
-  return Array.from(totals.values()).sort((a, b) => b.goals - a.goals || a.name.localeCompare(b.name));
+  return livePlayerStats(database).filter((player) => player.officialGoals > 0).map((player) => ({ name: player.name, teamId: player.teamId, goals: player.officialGoals, teamName: player.teamName }));
 }
 
 export function countConfirmed(database: LeagueDatabase) {
@@ -264,4 +373,8 @@ export function countPending(database: LeagueDatabase) {
 
 export function matchLabel(database: LeagueDatabase, match: Match) {
   return `${teamById(database.teams, match.homeTeamId)?.name ?? "Home"} ${match.homeScore ?? "–"}–${match.awayScore ?? "–"} ${teamById(database.teams, match.awayTeamId)?.name ?? "Away"}`;
+}
+
+export function ruleLabel(rule: TiebreakerRule) {
+  return rule === "points" ? "Points" : rule === "goalDifference" ? "Goal difference" : rule === "goalsFor" ? "Goals scored" : rule === "headToHead" ? "Head-to-head points" : "Wins";
 }
