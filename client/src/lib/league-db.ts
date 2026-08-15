@@ -297,8 +297,9 @@ export function matchDateKey(timestamp: number | string | Date) {
 }
 
 export function isMatchDateOpen(match: Pick<Match, "date" | "kickoffAt">, now = new Date()) {
-  const scheduledDate = match.kickoffAt ? matchDateKey(match.kickoffAt) : match.date;
-  return Boolean(scheduledDate) && scheduledDate <= leagueDateKey(now);
+  // `date` is the canonical IST matchday date supplied by the backend. The
+  // kickoff timestamp is display-only because late slots can cross UTC midnight.
+  return Boolean(match.date) && match.date <= leagueDateKey(now);
 }
 
 export function formatMatchKickoff(match: Pick<Match, "date" | "kickoffAt">) {
