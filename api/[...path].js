@@ -524,8 +524,6 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       ORDER BY u.display_name`
   );
   const params = { seasonId: season?.id ?? 0 };
-  const teamFilter = user.role === "player" && user.teamId ? "AND (m.home_team_id = :teamId OR m.away_team_id = :teamId)" : "";
-  if (user.role === "player" && user.teamId) params.teamId = user.teamId;
   const matches = season ? await query(
     `SELECT m.id, m.matchday, m.kickoff_at, m.original_kickoff_at, m.rescheduled_at, m.reschedule_reason,
             m.status, m.home_score, m.away_score,
@@ -533,7 +531,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
             a.id AS away_team_id, a.name AS away_team_name, a.short_code AS away_short_code,
             m.submitted_by_email, m.submitted_at, m.confirmed_by_email
        FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id
-      WHERE m.season_id = :seasonId ${teamFilter}
+      WHERE m.season_id = :seasonId
       ORDER BY m.matchday, m.kickoff_at`,
     params
   ) : [];

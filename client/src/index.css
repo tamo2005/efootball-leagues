@@ -779,3 +779,26 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
 @media (max-width: 1080px) { .fixture-layout { grid-template-columns: 1fr; } .today-fixtures-panel { position: static; } }
 @media (max-width: 760px) { .fixture-desk-hero { align-items: flex-start; flex-direction: column; padding: 21px 18px; } .fixture-desk-stats { width: 100%; min-width: 0; } .fixture-legend { align-items: flex-start; flex-direction: column; gap: 9px; } .legend-note { margin-left: 0; } .fixture-main { padding: 18px 14px; } .match-row { grid-template-columns: 72px minmax(0, 1fr); gap: 10px; padding: 14px 12px; } .match-date { align-self: start; } .match-teams { grid-template-columns: minmax(52px, 1fr) 54px minmax(52px, 1fr); gap: 4px; } .match-score { min-width: 54px; } .match-score strong { font-size: 20px; } .match-team { font-size: 9px; } .match-meta { display: flex; grid-column: 1 / -1; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 7px 10px; padding-top: 9px; border-top: 1px solid #eee6dc; } .match-meta small { flex-basis: 100%; } .match-actions { grid-column: 1 / -1; justify-content: flex-start; padding-top: 2px; } .competition-rule-grid { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .fixture-desk-stats strong { font-size: 19px; } .fixture-desk-stats small { font-size: 7px; } .today-fixture-teams { gap: 4px; } .today-fixture-teams strong { font-size: 10px; } .fixture-group-heading { gap: 9px; } .matchday-number { width: 30px; height: 30px; } }
+
+.fixture-toolbar-left { display: grid; gap: 10px; min-width: 0; }
+.fixture-scope-tabs { display: flex; align-items: center; gap: 6px; }
+.fixture-scope-tabs button { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 12px; border: 1px solid #eadfce; border-radius: 7px; background: #fffaf4; color: #8a7c83; font-size: 10px; font-weight: 900; white-space: nowrap; }
+.fixture-scope-tabs button:hover:not(:disabled) { border-color: #c7a45a; color: #8b1e3f; }
+.fixture-scope-tabs button.selected { border-color: #8b1e3f; background: #8b1e3f; color: #fffaf2; box-shadow: 0 5px 14px rgba(139,30,63,.14); }
+.fixture-scope-tabs button span { display: inline-grid; min-width: 18px; height: 18px; place-items: center; padding: 0 4px; border-radius: 999px; background: #f2e5cf; color: #8b681c; font-size: 8px; }
+.fixture-scope-tabs button.selected span { background: #dfbd69; color: #21111d; }
+.fixture-scope-tabs button:disabled { cursor: not-allowed; opacity: .48; }
+.match-row-settled { border-color: #d9c48c; background: linear-gradient(100deg, #fffaf0 0%, #fffdf8 70%); }
+.match-row-settled:hover { border-color: #b89951; }
+.match-team-winner { color: #8b1e3f; }
+.winner-tag { display: inline-flex; align-items: center; padding: 3px 5px; border-radius: 4px; background: #dfbd69; color: #21111d; font-size: 7px; font-weight: 950; letter-spacing: .08em; line-height: 1; }
+.match-score-settled strong { color: #8b1e3f; }
+.match-outcome-badge { display: inline-flex; align-items: center; justify-content: center; min-height: 16px; padding: 0 5px; border-radius: 4px; font-size: 7px; font-weight: 950; letter-spacing: .08em; }
+.match-outcome-badge.win { background: #dfbd69; color: #21111d; }
+.match-outcome-badge.draw { background: #eee4db; color: #76666d; }
+.match-goals-summary { display: grid; gap: 3px; max-width: 100%; margin-top: 2px; padding-top: 5px; border-top: 1px solid #eee4d8; }
+.match-goals-summary strong { color: #8b1e3f; font-size: 7px; font-weight: 950; letter-spacing: .1em; }
+.match-goals-summary span { overflow: hidden; color: #76666d; font-size: 8px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.match-goals-summary.official span { color: #4d755c; font-weight: 700; }
+.match-goals-summary.provisional strong { color: #aa6b31; }
+@media (max-width: 760px) { .fixture-toolbar { align-items: stretch; flex-direction: column; gap: 13px; } .fixture-toolbar-left { width: 100%; } .fixture-scope-tabs { overflow-x: auto; } .fixture-scope-tabs button { flex: 1 0 auto; justify-content: center; } .search-field { width: 100%; } .winner-tag { font-size: 6px; } .match-goals-summary { width: 100%; } }
