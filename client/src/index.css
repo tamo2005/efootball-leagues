@@ -653,3 +653,36 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+
+/* Registration guidance and conflict feedback */
+.auth-form label {
+  gap: 0.38rem;
+}
+
+.field-help {
+  display: block;
+  margin-top: -0.08rem;
+  color: var(--ink-muted, #69717f);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.auth-form-error {
+  margin: -0.2rem 0 0;
+  border: 1px solid rgba(151, 54, 64, 0.24);
+  border-radius: 0.7rem;
+  background: rgba(151, 54, 64, 0.08);
+  color: #9a263d;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+@media (max-width: 620px) {
+  .field-help {
+    font-size: 0.68rem;
+  }
+}

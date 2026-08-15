@@ -32,6 +32,20 @@ async function addColumn(tableName: string, columnName: string, definition: stri
   }
 }
 
+async function hasIndex(tableName: string, indexName: string) {
+  const [rows] = await connection.query(
+    `SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+    [tableName, indexName],
+  );
+  return Number((rows as Array<{ count: number }>)[0]?.count || 0) > 0;
+}
+
+async function addUniqueIndex(tableName: string, indexName: string, columnName: string) {
+  if (!(await hasIndex(tableName, indexName))) {
+    await connection.query(`ALTER TABLE \`${tableName}\` ADD UNIQUE KEY \`${indexName}\` (\`${columnName}\`)`);
+  }
+}
+
 try {
   await connection.query(schema);
 
@@ -40,6 +54,7 @@ try {
   await addColumn("teams", "approved_by_email", "VARCHAR(320) NULL");
   await addColumn("teams", "approved_at", "BIGINT NULL");
   await connection.query("ALTER TABLE teams MODIFY COLUMN status ENUM('PENDING', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'APPROVED'");
+  await addUniqueIndex("teams", "teams_name_uq", "name");
 
   await addColumn("matches", "original_kickoff_at", "BIGINT NULL");
   await addColumn("matches", "rescheduled_at", "BIGINT NULL");

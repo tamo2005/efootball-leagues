@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS teams (
   approved_by_email VARCHAR(320) NULL,
   approved_at BIGINT NULL,
   created_at BIGINT NOT NULL,
+  UNIQUE KEY teams_name_uq (name),
   UNIQUE KEY teams_short_code_uq (short_code),
   INDEX teams_status_idx (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

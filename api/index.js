@@ -300,6 +300,18 @@ var ApiError = class extends Error {
     this.code = code;
   }
 };
+function duplicateTeamError(error) {
+  const candidate = error;
+  if (candidate?.code !== "ER_DUP_ENTRY") return null;
+  const message = String(candidate.message || "");
+  if (message.includes("teams_name_uq") || message.toLowerCase().includes("name")) {
+    return new ApiError(409, "TEAM_NAME_IN_USE", "That team name already exists. Choose a different name.");
+  }
+  if (message.includes("teams_short_code_uq") || message.toLowerCase().includes("short_code")) {
+    return new ApiError(409, "TEAM_CODE_IN_USE", "That team code already exists. Choose a different code.");
+  }
+  return new ApiError(409, "TEAM_IN_USE", "That team name or team code already exists. Choose different values.");
+}
 var asyncRoute = (handler) => (request, response, next) => {
   handler(request, response).catch(next);
 };
@@ -449,36 +461,51 @@ var registerRoute = asyncRoute(async (request, response) => {
     response.status(409).json({ error: "EMAIL_IN_USE", message: "That email is already registered. Sign in or use a different email." });
     return;
   }
-  const existingTeam = await query("SELECT id FROM teams WHERE LOWER(name) = LOWER(:name) OR UPPER(short_code) = UPPER(:shortCode) LIMIT 1", { name: teamName, shortCode });
-  if (existingTeam[0]) {
-    response.status(409).json({ error: "TEAM_IN_USE", message: "That team name or short code is already in the league." });
+  const existingTeamName = await query("SELECT id FROM teams WHERE LOWER(name) = LOWER(:name) LIMIT 1", { name: teamName });
+  const existingTeamCode = await query("SELECT id FROM teams WHERE UPPER(short_code) = UPPER(:shortCode) LIMIT 1", { shortCode });
+  if (existingTeamName[0] && existingTeamCode[0]) {
+    response.status(409).json({ error: "TEAM_NAME_AND_CODE_IN_USE", message: "That team name and team code already exist. Choose different values." });
+    return;
+  }
+  if (existingTeamName[0]) {
+    response.status(409).json({ error: "TEAM_NAME_IN_USE", message: "That team name already exists. Choose a different name." });
+    return;
+  }
+  if (existingTeamCode[0]) {
+    response.status(409).json({ error: "TEAM_CODE_IN_USE", message: "That team code already exists. Choose a different code." });
     return;
   }
   const now = Date.now();
   const passwordHash = await hashPassword(password);
   let teamId = 0;
-  await withTransaction(async (connection) => {
-    const [teamResult] = await connection.execute(
-      `INSERT INTO teams (name, short_code, manager_name, accent, status, created_by_email, created_at)
+  try {
+    await withTransaction(async (connection) => {
+      const [teamResult] = await connection.execute(
+        `INSERT INTO teams (name, short_code, manager_name, accent, status, created_by_email, created_at)
        VALUES (?, ?, ?, '#8B1E3F', 'PENDING', ?, ?)`,
-      [teamName, shortCode, displayName, email, now]
-    );
-    teamId = Number(teamResult.insertId);
-    await connection.execute(
-      `INSERT INTO users (email, display_name, password_hash, role, status, created_at, updated_at)
+        [teamName, shortCode, displayName, email, now]
+      );
+      teamId = Number(teamResult.insertId);
+      await connection.execute(
+        `INSERT INTO users (email, display_name, password_hash, role, status, created_at, updated_at)
        VALUES (?, ?, ?, 'player', 'ACTIVE', ?, ?)`,
-      [email, displayName, passwordHash, now, now]
-    );
-    await connection.execute(
-      "INSERT INTO team_memberships (user_email, team_id, membership_role, created_at) VALUES (?, ?, 'CAPTAIN', ?)",
-      [email, teamId, now]
-    );
-    await connection.execute(
-      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+        [email, displayName, passwordHash, now, now]
+      );
+      await connection.execute(
+        "INSERT INTO team_memberships (user_email, team_id, membership_role, created_at) VALUES (?, ?, 'CAPTAIN', ?)",
+        [email, teamId, now]
+      );
+      await connection.execute(
+        `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
        VALUES (?, 'PLAYER_REGISTERED', 'team', ?, JSON_OBJECT('email', ?, 'team', ?, 'status', 'PENDING'), ?)`,
-      [email, String(teamId), email, teamName, now]
-    );
-  });
+        [email, String(teamId), email, teamName, now]
+      );
+    });
+  } catch (error) {
+    const conflict = duplicateTeamError(error);
+    if (conflict) throw conflict;
+    throw error;
+  }
   await createSession(email, response);
   response.status(201).json({ user: await findUserByEmail(email), team: { id: teamId, name: teamName, shortCode, status: "PENDING" } });
 });
@@ -577,12 +604,32 @@ app.post("/api/admin/teams", asyncRoute(async (request, response) => {
     response.status(400).json({ error: "INVALID_TEAM", message: "Team name, short code, and manager name are required." });
     return;
   }
+  const existingTeamName = await query("SELECT id FROM teams WHERE LOWER(name) = LOWER(:name) LIMIT 1", { name });
+  const existingTeamCode = await query("SELECT id FROM teams WHERE UPPER(short_code) = UPPER(:shortCode) LIMIT 1", { shortCode });
+  if (existingTeamName[0] && existingTeamCode[0]) {
+    response.status(409).json({ error: "TEAM_NAME_AND_CODE_IN_USE", message: "That team name and team code already exist. Choose different values." });
+    return;
+  }
+  if (existingTeamName[0]) {
+    response.status(409).json({ error: "TEAM_NAME_IN_USE", message: "That team name already exists. Choose a different name." });
+    return;
+  }
+  if (existingTeamCode[0]) {
+    response.status(409).json({ error: "TEAM_CODE_IN_USE", message: "That team code already exists. Choose a different code." });
+    return;
+  }
   const now = Date.now();
-  const result = await query(
-    "INSERT INTO teams (name, short_code, manager_name, accent, status, created_by_email, approved_by_email, approved_at, created_at) VALUES (:name, :shortCode, :managerName, :accent, 'APPROVED', :createdBy, :approvedBy, :approvedAt, :createdAt)",
-    { name, shortCode, managerName, accent, createdBy: user.email, approvedBy: user.email, approvedAt: now, createdAt: now }
-  );
-  response.status(201).json({ id: result.insertId, status: "APPROVED" });
+  try {
+    const result = await query(
+      "INSERT INTO teams (name, short_code, manager_name, accent, status, created_by_email, approved_by_email, approved_at, created_at) VALUES (:name, :shortCode, :managerName, :accent, 'APPROVED', :createdBy, :approvedBy, :approvedAt, :createdAt)",
+      { name, shortCode, managerName, accent, createdBy: user.email, approvedBy: user.email, approvedAt: now, createdAt: now }
+    );
+    response.status(201).json({ id: result.insertId, status: "APPROVED" });
+  } catch (error) {
+    const conflict = duplicateTeamError(error);
+    if (conflict) throw conflict;
+    throw error;
+  }
 }));
 app.delete("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
