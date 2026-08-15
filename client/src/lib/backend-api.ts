@@ -175,6 +175,13 @@ export function backendResetTournament(seasonId: number) {
   return request<{ seasonId: number; deletedMatches: number; status: string }>(`/api/admin/seasons/${seasonId}/reset`, { method: "POST" });
 }
 
+export function backendUpdateTeam(teamId: string, name: string, shortCode: string) {
+  return request<{ teamId: number; name: string; shortCode: string; updated: boolean }>(`/api/admin/teams/${teamId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name, shortCode }),
+  });
+}
+
 export function backendDeleteTeam(teamId: string) {
   return request<{ teamId: number; deleted: true }>(`/api/admin/teams/${teamId}`, { method: "DELETE" });
 }

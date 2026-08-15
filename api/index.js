@@ -631,6 +631,69 @@ app.post("/api/admin/teams", asyncRoute(async (request, response) => {
     throw error;
   }
 }));
+app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const teamId = Number(request.params.teamId);
+  if (!Number.isInteger(teamId) || teamId <= 0) {
+    response.status(400).json({ error: "INVALID_TEAM_ID", message: "That team identifier is invalid." });
+    return;
+  }
+  const name = String(request.body?.name || "").trim();
+  const shortCode = String(request.body?.shortCode || "").trim().toUpperCase();
+  if (!name || !shortCode) {
+    response.status(400).json({ error: "INVALID_TEAM_UPDATE", message: "Team name and team code are required." });
+    return;
+  }
+  if (name.length > 120) {
+    response.status(400).json({ error: "INVALID_TEAM_NAME", message: "Team name must be 120 characters or fewer." });
+    return;
+  }
+  if (!/^[A-Z0-9]{2,12}$/.test(shortCode)) {
+    response.status(400).json({ error: "INVALID_TEAM_CODE", message: "Team code must contain 2 to 12 letters or numbers." });
+    return;
+  }
+  const teamRows = await query("SELECT id, name, short_code FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+  const current = teamRows[0];
+  if (!current) {
+    response.status(404).json({ error: "TEAM_NOT_FOUND", message: "That team no longer exists." });
+    return;
+  }
+  const existingTeamName = await query("SELECT id FROM teams WHERE LOWER(name) = LOWER(:name) AND id <> :teamId LIMIT 1", { name, teamId });
+  const existingTeamCode = await query("SELECT id FROM teams WHERE UPPER(short_code) = UPPER(:shortCode) AND id <> :teamId LIMIT 1", { shortCode, teamId });
+  if (existingTeamName[0] && existingTeamCode[0]) {
+    response.status(409).json({ error: "TEAM_NAME_AND_CODE_IN_USE", message: "That team name and team code already exist. Choose different values." });
+    return;
+  }
+  if (existingTeamName[0]) {
+    response.status(409).json({ error: "TEAM_NAME_IN_USE", message: "That team name already exists. Choose a different name." });
+    return;
+  }
+  if (existingTeamCode[0]) {
+    response.status(409).json({ error: "TEAM_CODE_IN_USE", message: "That team code already exists. Choose a different code." });
+    return;
+  }
+  if (current.name === name && current.short_code === shortCode) {
+    response.json({ teamId, name, shortCode, updated: false });
+    return;
+  }
+  const now = Date.now();
+  try {
+    await withTransaction(async (connection) => {
+      await connection.execute("UPDATE teams SET name = ?, short_code = ? WHERE id = ?", [name, shortCode, teamId]);
+      await connection.execute(
+        `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+         VALUES (?, 'TEAM_UPDATED', 'team', ?, JSON_OBJECT('oldName', ?, 'newName', ?, 'oldShortCode', ?, 'newShortCode', ?), ?)`,
+        [user.email, String(teamId), current.name, name, current.short_code, shortCode, now]
+      );
+    });
+  } catch (error) {
+    const conflict = duplicateTeamError(error);
+    if (conflict) throw conflict;
+    throw error;
+  }
+  response.json({ teamId, name, shortCode, updated: true });
+}));
 app.delete("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
   if (!user) return;

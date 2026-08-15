@@ -22,6 +22,7 @@ import {
   Menu,
   Trash2,
   Plus,
+  Pencil,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -64,7 +65,7 @@ import {
   type TiebreakerRule,
   type UserAccount,
 } from "@/lib/league-db";
-import { backendApproveTeam, backendConfirmResult, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendLogin, backendLogout, backendMe, backendRegister, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, mergeBackendDashboard, toLocalUser } from "@/lib/backend-api";
+import { backendApproveTeam, backendConfirmResult, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendLogin, backendLogout, backendMe, backendRegister, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, backendUpdateTeam, mergeBackendDashboard, toLocalUser } from "@/lib/backend-api";
 
 type View = "overview" | "fixtures" | "teams" | "table" | "database" | "rules";
 type ResultInput = { id: string; teamId: string; playerName: string; playerEmail?: string; minute: string };
@@ -342,12 +343,33 @@ function AddTeamPanel({ onClose, onAdd }: { onClose: () => void; onAdd: (name: s
   return <div className="inline-form-card"><div className="inline-form-heading"><div><p className="eyebrow">NEW RECORD</p><h3>Add a team</h3></div><button className="icon-button" onClick={onClose}><X size={17} /></button></div><form className="team-form" onSubmit={submit}><label>Team name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Capital United" /></label><label>Short code<input value={shortName} onChange={(event) => setShortName(event.target.value)} maxLength={3} placeholder="CAP" /></label><label>Manager / eFootball username<input value={manager} onChange={(event) => setManager(event.target.value)} placeholder="Player name" /></label><div className="inline-form-actions"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit">Add team <ArrowRight size={15} /></Button></div></form></div>;
 }
 
+function EditTeamPanel({ team, onClose, onSave }: { team: Team; onClose: () => void; onSave: (name: string, shortCode: string) => void }) {
+  const [name, setName] = useState(team.name);
+  const [shortCode, setShortCode] = useState(team.shortName);
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const nextName = name.trim();
+    const nextCode = shortCode.trim().toUpperCase();
+    if (!nextName || !nextCode) {
+      toast.error("Complete the team name and team code.");
+      return;
+    }
+    if (nextCode.length < 2 || nextCode.length > 12 || !/^[A-Z0-9]+$/.test(nextCode)) {
+      toast.error("Team code must contain 2 to 12 letters or numbers.");
+      return;
+    }
+    onSave(nextName, nextCode);
+  }
+  return <div className="inline-form-card team-edit-panel"><div className="inline-form-heading"><div><p className="eyebrow">ADMIN EDIT</p><h3>Update {team.name}</h3><p className="form-help">Changing these labels keeps the same team ID, members, fixtures, and results.</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close team editor"><X size={17} /></button></div><form className="team-form" onSubmit={submit}><label>Team name<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} autoFocus /></label><label>Team code<input value={shortCode} onChange={(event) => setShortCode(event.target.value.toUpperCase())} maxLength={12} placeholder="CAP" /></label><div className="inline-form-actions"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit"><Check size={15} /> Save changes</Button></div></form></div>;
+}
+
 export default function Home() {
   const [database, setDatabase] = useState<LeagueDatabase>(() => getDatabase());
   const [remoteUser, setRemoteUser] = useState<UserAccount | null | undefined>(undefined);
   const [activeView, setActiveView] = useState<View>("overview");
   const [resultMatchId, setResultMatchId] = useState<string | null>(null);
   const [showTeamForm, setShowTeamForm] = useState(false);
+  const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [fixtureFilter, setFixtureFilter] = useState<"all" | "upcoming" | "pending" | "completed">("all");
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -505,6 +527,27 @@ export default function Home() {
     }
   }
 
+  async function updateTeam(teamId: string, name: string, shortCode: string) {
+    if (!isAdmin) return;
+    const team = database.teams.find((item) => item.id === teamId);
+    if (!team) return;
+    try {
+      if (useBackend) {
+        await backendUpdateTeam(teamId, name, shortCode);
+        await refreshRemoteDashboard();
+      } else {
+        setDatabase((current) => ({
+          ...current,
+          teams: current.teams.map((item) => item.id === teamId ? { ...item, name, shortName: shortCode } : item),
+        }));
+      }
+      setEditingTeamId(null);
+      toast.success("Team details updated", { description: `${name} · ${shortCode} is now the official team identity.` });
+    } catch (error) {
+      toast.error("Team could not be updated", { description: error instanceof Error ? error.message : "Try a different team name or code." });
+    }
+  }
+
   async function deleteTeam(teamId: string) {
     if (!isAdmin) return;
     const team = database.teams.find((item) => item.id === teamId);
@@ -658,7 +701,7 @@ export default function Home() {
 
           {activeView === "fixtures" && <section className="view-panel"><div className="fixture-toolbar"><div className="filter-tabs">{(["all", "upcoming", "pending", "completed"] as const).map((filter) => <button className={fixtureFilter === filter ? "selected" : ""} key={filter} onClick={() => setFixtureFilter(filter)}>{filter === "all" ? "All fixtures" : filter === "upcoming" ? "Upcoming" : filter === "pending" ? `Needs review ${pendingCount ? `· ${pendingCount}` : ""}` : "Completed"}</button>)}</div><label className="search-field"><Search size={15} /><input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search teams" /></label></div><div className="fixture-groups">{groupedFixtures.length ? groupedFixtures.map((group) => <section className="fixture-group" key={group.matchday}><div className="fixture-group-heading"><span className="matchday-number">{String(group.matchday).padStart(2, "0")}</span><div><p className="eyebrow">MATCHDAY {group.matchday}</p><h2>{formatMatchDate(group.matches[0].date)}</h2></div><span className="fixture-group-count">{group.matches.length} matches</span></div>{group.matches.map((match) => <MatchRow key={match.id} database={database} match={match} user={user} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</section>) : <div className="empty-panel"><CalendarDays size={24} /><h3>No fixtures match this view.</h3><p>Try a different status or clear the team search.</p></div>}</div></section>}
 
-          {activeView === "teams" && <section className="view-panel"><div className="view-toolbar"><div><p className="eyebrow">ROSTER DIRECTORY</p><h2>{database.teams.length} teams in this season</h2><p className="section-caption">Only approved teams are included in generated fixtures.</p></div><div className="view-toolbar-actions">{isAdmin && <Button disabled={!useBackend || tournamentStarted || approvedTeamCount < 2} title={!useBackend ? "Live backend mode is required" : tournamentStarted ? "This tournament already has fixtures" : approvedTeamCount < 2 ? "Approve at least two teams first" : "Start the tournament and generate fixtures"} onClick={startTournament}><Flag size={16} /> {tournamentStarted ? "Tournament active" : "Start tournament"}</Button>}{isAdmin && useBackend && tournamentStarted && <Button variant="destructive" title="Delete the current fixtures and restart this tournament" onClick={resetTournament}><RefreshCw size={16} /> Reset tournament</Button>}{isAdmin ? <Button variant="outline" onClick={() => setShowTeamForm((current) => !current)}>{showTeamForm ? <X size={16} /> : <Plus size={16} />} {showTeamForm ? "Close form" : "Add team"}</Button> : <span className="read-only-note"><Eye size={14} /> Player view · read only</span>}</div></div>{isAdmin && database.teams.some((team) => team.approvalStatus === "PENDING") && <section className="approval-panel panel"><div className="panel-header"><div><p className="eyebrow">ADMIN QUEUE</p><h2>Teams awaiting approval</h2></div><Clock3 size={18} className="panel-icon" /></div><div className="approval-list">{database.teams.filter((team) => team.approvalStatus === "PENDING").map((team) => <div className="approval-row" key={team.id}><TeamMark team={team} size="sm" /><div><strong>{team.name}</strong><small>{team.manager} · {team.createdByEmail || "Registration request"}</small></div><div className="approval-actions"><Button onClick={() => decideTeam(team.id, "approve")}><Check size={14} /> Approve</Button><Button variant="outline" onClick={() => decideTeam(team.id, "reject")}><X size={14} /> Reject</Button></div></div>)}</div></section>}{showTeamForm && <AddTeamPanel onClose={() => setShowTeamForm(false)} onAdd={addTeam} />}<div className="team-grid">{database.teams.map((team, index) => { const row = standings.find((item) => item.id === team.id); const approval = team.approvalStatus || "APPROVED"; return <article className="team-card" key={team.id}><div className="team-card-top"><TeamMark team={team} size="lg" /><span className="team-card-rank">#{index + 1}</span>{isAdmin ? <button className="icon-button danger-icon" title={`Delete ${team.name}`} aria-label={`Delete ${team.name}`} onClick={() => deleteTeam(team.id)}><Trash2 size={16} /></button> : <span className="team-card-rank-spacer" aria-hidden="true" />}</div><h3>{team.name}</h3><p><UserRound size={13} /> {team.manager}</p><span className={`team-approval approval-${approval.toLowerCase()}`}>{approval}</span><div className="team-card-stats"><span><strong>{row?.played ?? 0}</strong><small>played</small></span><span><strong>{row?.points ?? 0}</strong><small>points</small></span><span><strong>{row?.goalDifference && row.goalDifference > 0 ? `+${row.goalDifference}` : row?.goalDifference ?? 0}</strong><small>goal diff</small></span></div><div className="team-card-footer"><span className="team-record"><span className="record-dot" />{approval === "APPROVED" ? "Eligible for fixtures" : "Not in schedule yet"}</span><ArrowRight size={15} /></div></article>; })}</div></section>}
+          {activeView === "teams" && <section className="view-panel"><div className="view-toolbar"><div><p className="eyebrow">ROSTER DIRECTORY</p><h2>{database.teams.length} teams in this season</h2><p className="section-caption">Only approved teams are included in generated fixtures.</p></div><div className="view-toolbar-actions">{isAdmin && <Button disabled={!useBackend || tournamentStarted || approvedTeamCount < 2} title={!useBackend ? "Live backend mode is required" : tournamentStarted ? "This tournament already has fixtures" : approvedTeamCount < 2 ? "Approve at least two teams first" : "Start the tournament and generate fixtures"} onClick={startTournament}><Flag size={16} /> {tournamentStarted ? "Tournament active" : "Start tournament"}</Button>}{isAdmin && useBackend && tournamentStarted && <Button variant="destructive" title="Delete the current fixtures and restart this tournament" onClick={resetTournament}><RefreshCw size={16} /> Reset tournament</Button>}{isAdmin ? <Button variant="outline" onClick={() => setShowTeamForm((current) => !current)}>{showTeamForm ? <X size={16} /> : <Plus size={16} />} {showTeamForm ? "Close form" : "Add team"}</Button> : <span className="read-only-note"><Eye size={14} /> Player view · read only</span>}</div></div>{isAdmin && database.teams.some((team) => team.approvalStatus === "PENDING") && <section className="approval-panel panel"><div className="panel-header"><div><p className="eyebrow">ADMIN QUEUE</p><h2>Teams awaiting approval</h2></div><Clock3 size={18} className="panel-icon" /></div><div className="approval-list">{database.teams.filter((team) => team.approvalStatus === "PENDING").map((team) => <div className="approval-row" key={team.id}><TeamMark team={team} size="sm" /><div><strong>{team.name}</strong><small>{team.manager} · {team.createdByEmail || "Registration request"}</small></div><div className="approval-actions"><Button onClick={() => decideTeam(team.id, "approve")}><Check size={14} /> Approve</Button><Button variant="outline" onClick={() => decideTeam(team.id, "reject")}><X size={14} /> Reject</Button></div></div>)}</div></section>}{showTeamForm && <AddTeamPanel onClose={() => setShowTeamForm(false)} onAdd={addTeam} />}{editingTeamId && (() => { const editTeam = database.teams.find((item) => item.id === editingTeamId); return editTeam ? <EditTeamPanel team={editTeam} onClose={() => setEditingTeamId(null)} onSave={(name, shortCode) => updateTeam(editingTeamId, name, shortCode)} /> : null; })()}<div className="team-grid">{database.teams.map((team, index) => { const row = standings.find((item) => item.id === team.id); const approval = team.approvalStatus || "APPROVED"; return <article className="team-card" key={team.id}><div className="team-card-top"><TeamMark team={team} size="lg" /><span className="team-card-rank">#{index + 1}</span>{isAdmin ? <div className="team-card-actions"><button className="icon-button" type="button" title={`Edit ${team.name}`} aria-label={`Edit ${team.name}`} onClick={() => setEditingTeamId(team.id)}><Pencil size={15} /></button><button className="icon-button danger-icon" type="button" title={`Delete ${team.name}`} aria-label={`Delete ${team.name}`} onClick={() => deleteTeam(team.id)}><Trash2 size={16} /></button></div> : <span className="team-card-rank-spacer" aria-hidden="true" />}</div><h3>{team.name}</h3><p><UserRound size={13} /> {team.manager}</p><span className={`team-approval approval-${approval.toLowerCase()}`}>{approval}</span><div className="team-card-stats"><span><strong>{row?.played ?? 0}</strong><small>played</small></span><span><strong>{row?.points ?? 0}</strong><small>points</small></span><span><strong>{row?.goalDifference && row.goalDifference > 0 ? `+${row.goalDifference}` : row?.goalDifference ?? 0}</strong><small>goal diff</small></span></div><div className="team-card-footer"><span className="team-record"><span className="record-dot" />{approval === "APPROVED" ? "Eligible for fixtures" : "Not in schedule yet"}</span><ArrowRight size={15} /></div></article>; })}</div></section>}
 
           {activeView === "table" && <section className="view-panel"><div className="table-view-grid"><section className="panel full-table-panel"><div className="panel-header"><div><p className="eyebrow">OFFICIAL STANDINGS</p><h2>{database.league.name} table</h2></div><span className="table-updated"><span />Updated live</span></div><StandingTable standings={standings} /></section><aside className="panel golden-boot-panel"><div className="panel-header"><div><p className="eyebrow">PLAYER STATS</p><h2>Golden Boot</h2></div><Trophy size={18} className="panel-icon" /></div><div className="scorer-list">{scorers.slice(0, 6).map((player, index) => <div className="scorer-row" key={`${player.teamId}-${player.playerEmail || player.name}`}><span className="scorer-rank">{String(index + 1).padStart(2, "0")}</span><div className="scorer-avatar">{initials(player.name)}</div><div><strong>{player.name}</strong><small>{player.teamName}</small></div><b>{player.goals}</b></div>)}{!scorers.length && <p className="muted-copy">Goal scorer data will appear after the first confirmed result.</p>}</div></aside></div><PlayerStatsPanel stats={playerStats} /></section>}
 

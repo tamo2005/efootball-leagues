@@ -242,6 +242,14 @@ html, body { background: #F5F7FB; color: #162444; }
 .danger-icon { color: #b35363; }
 .danger-icon:hover { background: #fff0f2; color: #8b1e3f; }
 .team-card-rank-spacer { width: 29px; height: 29px; }
+.team-card-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.team-card-actions .icon-button { width: 29px; height: 29px; }
+.team-card-actions .icon-button:not(.danger-icon) { color: #718c72; }
+.team-card-actions .icon-button:not(.danger-icon):hover { background: #eef7e9; color: #315d42; }
+.team-edit-panel { border-color: #d8bd77; background: linear-gradient(135deg, #fffaf0 0%, #f8fbf4 100%); }
+.team-edit-panel .inline-form-heading { align-items: flex-start; }
+.form-help { max-width: 560px; margin: 6px 0 0; color: #8a7b72; font-size: 10px; line-height: 1.45; }
+
 
 /* Google authentication */
 .google-auth-button {
