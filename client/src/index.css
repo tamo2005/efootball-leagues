@@ -242,3 +242,56 @@ html, body { background: #F5F7FB; color: #162444; }
 .danger-icon { color: #b35363; }
 .danger-icon:hover { background: #fff0f2; color: #8b1e3f; }
 .team-card-rank-spacer { width: 29px; height: 29px; }
+
+/* Google authentication */
+.google-auth-button {
+  width: 100%;
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid rgba(26, 43, 95, 0.22);
+  border-radius: 12px;
+  background: #fff;
+  color: #1a2b5f;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.google-auth-button:hover {
+  border-color: #c8a84b;
+  box-shadow: 0 8px 22px rgba(26, 43, 95, 0.12);
+  transform: translateY(-1px);
+}
+.google-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: #4285f4;
+  font-family: Arial, sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+}
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 4px;
+  color: rgba(26, 43, 95, 0.55);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: rgba(26, 43, 95, 0.14);
+}
+.auth-divider span { white-space: nowrap; }

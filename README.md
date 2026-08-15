@@ -127,7 +127,7 @@ BOOTSTRAP_ADMIN_PASSWORD="use-a-strong-password" \
 pnpm db:bootstrap
 ```
 
-Set `VITE_BACKEND_ENABLED=true` for the frontend build. In Vercel, configure `DATABASE_URL`, `DATABASE_SSL=true`, `DB_POOL_SIZE`, and `VITE_BACKEND_ENABLED=true` as project environment variables. The API exposes `/api/health`, `/api/auth/login`, `/api/auth/me`, `/api/auth/logout`, `/api/dashboard`, admin team/user/season operations, result submission and confirmation endpoints, standings, and player statistics.
+Set `VITE_BACKEND_ENABLED=true` for the frontend build. In Vercel, configure `DATABASE_URL`, `DATABASE_SSL=true`, `DB_POOL_SIZE`, and `VITE_BACKEND_ENABLED=true` as project environment variables. For Google Sign-In, also configure the server-only variables `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI=https://efootball-leagues-one.vercel.app/api/auth/google/callback`. Register that exact callback URL in Google Cloud Console under OAuth 2.0 Web application credentials. Google Sign-In validates the Google ID token and verified email, then matches the email to the existing `users.email` primary key; it does not create a duplicate user, change the password hash, modify team memberships, or alter league records. Users without an active eLeague account are directed to the existing email/password registration path. The API exposes `/api/health`, `/api/auth/login`, `/api/auth/google`, `/api/auth/google/callback`, `/api/auth/me`, `/api/auth/logout`, `/api/dashboard`, admin team/user/season operations, result submission and confirmation endpoints, standings, and player statistics.
 
 ### Compatible scheduling and standings
 

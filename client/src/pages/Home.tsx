@@ -184,6 +184,23 @@ function LoginPanel({ database, onLogin, useBackend }: { database: LeagueDatabas
   const [shortCode, setShortCode] = useState("");
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const googleStatus = params.get("google");
+    if (googleStatus === "error") {
+      toast.error("Google sign-in failed", { description: params.get("reason") || "Please try again or use email and password." });
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
+  function continueWithGoogle() {
+    if (!useBackend) {
+      toast.error("Google sign-in is available for the live league only.");
+      return;
+    }
+    window.location.assign("/api/auth/google");
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -211,7 +228,7 @@ function LoginPanel({ database, onLogin, useBackend }: { database: LeagueDatabas
   }
 
   const signingUp = mode === "signup";
-  return <div className="auth-shell"><div className="auth-card"><div className="league-brand auth-brand"><span className="brand-ball"><span /></span><div><strong>eLeague<span>.</span></strong><small>matchday manager</small></div></div><p className="eyebrow">SECURE LEAGUE ACCESS</p><div className="auth-mode-toggle"><button className={mode === "signin" ? "active" : ""} type="button" onClick={() => setMode("signin")}>Sign in</button><button className={mode === "signup" ? "active" : ""} type="button" onClick={() => setMode("signup")}>Create team</button></div><h1>{signingUp ? "Join the next matchday." : "Sign in to matchday."}</h1><p className="auth-copy">{signingUp ? "Register your player account and team. Your league admin will approve the team before fixtures are generated." : "Your role controls what you can change. Admins manage the competition; players submit results for their own fixtures."}</p><form className="auth-form" onSubmit={submit}>{signingUp && <><label>Display name<input autoComplete="name" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your eFootball name" /></label><label>Team name<input required value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="e.g. Doha Falcons" /></label><label>Team code<input required maxLength={12} value={shortCode} onChange={(event) => setShortCode(event.target.value.toUpperCase())} placeholder="e.g. DFL" /></label></>}<label>League email<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>Password<input type="password" autoComplete={signingUp ? "new-password" : "current-password"} minLength={8} required value={passcode} onChange={(event) => setPasscode(event.target.value)} /></label><Button type="submit" disabled={busy}>{signingUp ? <Users size={16} /> : <KeyRound size={16} />} {busy ? "Saving…" : signingUp ? "Submit registration" : "Sign in"}</Button></form>{signingUp ? <div className="demo-access"><strong>Approval workflow</strong><span>Your team is created as PENDING and only approved teams enter the schedule.</span></div> : useBackend ? <div className="demo-access"><strong>Database access is active</strong><span>Use the email and password created by your league administrator.</span></div> : <div className="demo-access"><strong>Demo access</strong><span>Admin · alex@eleague.local / admin123</span><span>Player · sam@eleague.local / player123</span></div>}</div></div>;
+  return <div className="auth-shell"><div className="auth-card"><div className="league-brand auth-brand"><span className="brand-ball"><span /></span><div><strong>eLeague<span>.</span></strong><small>matchday manager</small></div></div><p className="eyebrow">SECURE LEAGUE ACCESS</p><div className="auth-mode-toggle"><button className={mode === "signin" ? "active" : ""} type="button" onClick={() => setMode("signin")}>Sign in</button><button className={mode === "signup" ? "active" : ""} type="button" onClick={() => setMode("signup")}>Create team</button></div><h1>{signingUp ? "Join the next matchday." : "Sign in to matchday."}</h1><p className="auth-copy">{signingUp ? "Register your player account and team. Your league admin will approve the team before fixtures are generated." : "Your role controls what you can change. Admins manage the competition; players submit results for their own fixtures."}</p>{!signingUp && useBackend && <><button type="button" className="google-auth-button" onClick={continueWithGoogle}><span className="google-mark">G</span><span>Continue with Google</span></button><div className="auth-divider"><span>or use email</span></div></>}<form className="auth-form" onSubmit={submit}>{signingUp && <><label>Display name<input autoComplete="name" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your eFootball name" /></label><label>Team name<input required value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="e.g. Doha Falcons" /></label><label>Team code<input required maxLength={12} value={shortCode} onChange={(event) => setShortCode(event.target.value.toUpperCase())} placeholder="e.g. DFL" /></label></>}<label>League email<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>Password<input type="password" autoComplete={signingUp ? "new-password" : "current-password"} minLength={8} required value={passcode} onChange={(event) => setPasscode(event.target.value)} /></label><Button type="submit" disabled={busy}>{signingUp ? <Users size={16} /> : <KeyRound size={16} />} {busy ? "Saving…" : signingUp ? "Submit registration" : "Sign in"}</Button></form>{signingUp ? <div className="demo-access"><strong>Approval workflow</strong><span>Your team is created as PENDING and only approved teams enter the schedule.</span></div> : useBackend ? <div className="demo-access"><strong>Google account linking</strong><span>Google matches the email to your existing eLeague account. Your team, role, and league records stay unchanged.</span></div> : <div className="demo-access"><strong>Demo access</strong><span>Admin · alex@eleague.local / admin123</span><span>Player · sam@eleague.local / player123</span></div>}</div></div>;
 }
 
 function PlayerStatsPanel({ stats }: { stats: PlayerStat[] }) {

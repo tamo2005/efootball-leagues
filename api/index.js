@@ -1,5 +1,7 @@
 // server/app.ts
 import express from "express";
+import { randomBytes as randomBytes2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { OAuth2Client } from "google-auth-library";
 
 // server/auth.ts
 import { promisify } from "node:util";
@@ -272,7 +274,23 @@ function calculateStandings(teams, matches, tieBreakers = DEFAULT_TIEBREAKERS) {
 
 // server/app.ts
 var app = express();
+app.set("trust proxy", true);
 app.use(express.json({ limit: "1mb" }));
+var GOOGLE_STATE_COOKIE = "eleague_google_state";
+var GOOGLE_STATE_TTL_MS = 10 * 60 * 1e3;
+function cookieValue(request, name) {
+  const cookies = Object.fromEntries((request.headers.cookie || "").split(";").map((part) => part.trim().split("=")).filter(([key, value]) => key && value).map(([key, ...value]) => [key, decodeURIComponent(value.join("="))]));
+  return cookies[name] || null;
+}
+function googleConfig(request) {
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim() || `${request.protocol}://${request.get("host")}/api/auth/google/callback`;
+  return clientId && clientSecret ? { clientId, clientSecret, redirectUri } : null;
+}
+function oauthErrorRedirect(response, code) {
+  response.redirect(`/?google=error&reason=${encodeURIComponent(code)}`);
+}
 var ApiError = class extends Error {
   statusCode;
   code;
@@ -338,6 +356,66 @@ var loginRoute = asyncRoute(async (request, response) => {
 });
 app.post("/api/auth/login", loginRoute);
 app.post("/api/login", loginRoute);
+app.get("/api/auth/google", asyncRoute(async (request, response) => {
+  const config = googleConfig(request);
+  if (!config) {
+    oauthErrorRedirect(response, "Google sign-in is not configured yet.");
+    return;
+  }
+  const state = randomBytes2(32).toString("base64url");
+  const client = new OAuth2Client(config.clientId, config.clientSecret, config.redirectUri);
+  response.cookie(GOOGLE_STATE_COOKIE, state, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: GOOGLE_STATE_TTL_MS,
+    path: "/"
+  });
+  response.redirect(client.generateAuthUrl({ access_type: "online", scope: ["openid", "email", "profile"], state, prompt: "select_account" }));
+}));
+app.get("/api/auth/google/callback", asyncRoute(async (request, response) => {
+  const config = googleConfig(request);
+  const state = typeof request.query.state === "string" ? request.query.state : "";
+  const storedState = cookieValue(request, GOOGLE_STATE_COOKIE);
+  response.clearCookie(GOOGLE_STATE_COOKIE, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/" });
+  if (!config) {
+    oauthErrorRedirect(response, "Google sign-in is not configured yet.");
+    return;
+  }
+  if (!state || !storedState || state.length !== storedState.length || !timingSafeEqual2(Buffer.from(state), Buffer.from(storedState))) {
+    oauthErrorRedirect(response, "Google sign-in could not be verified. Please try again.");
+    return;
+  }
+  if (typeof request.query.error === "string") {
+    oauthErrorRedirect(response, "Google sign-in was cancelled.");
+    return;
+  }
+  const code = typeof request.query.code === "string" ? request.query.code : "";
+  if (!code) {
+    oauthErrorRedirect(response, "Google did not return an authorization code.");
+    return;
+  }
+  const client = new OAuth2Client(config.clientId, config.clientSecret, config.redirectUri);
+  const { tokens } = await client.getToken(code);
+  if (!tokens.id_token) {
+    oauthErrorRedirect(response, "Google did not return a valid identity token.");
+    return;
+  }
+  const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: config.clientId });
+  const payload = ticket.getPayload();
+  const email = payload?.email?.trim().toLowerCase();
+  if (!email || payload?.email_verified !== true) {
+    oauthErrorRedirect(response, "Google returned an unverified email address.");
+    return;
+  }
+  const existing = await findUserByEmail(email);
+  if (!existing || existing.status !== "ACTIVE") {
+    oauthErrorRedirect(response, "No active eLeague account uses this Google email. Choose Create team first, then use this email for registration.");
+    return;
+  }
+  await createSession(email, response);
+  response.redirect("/?google=success");
+}));
 var meRoute = asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
