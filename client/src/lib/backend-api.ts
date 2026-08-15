@@ -101,8 +101,8 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
   return {
     ...current,
     league: snapshot.season ? { ...current.league, name: snapshot.season.name, season: snapshot.season.name, status: snapshot.season.status === "ACTIVE" ? "ACTIVE" : snapshot.season.status === "COMPLETED" ? "COMPLETED" : "DRAFT", teamsCount: teams.length } : current.league,
-    teams: teams.length ? teams : current.teams,
-    matches: matches.length ? matches : current.matches,
+    teams,
+    matches,
   };
 }
 
