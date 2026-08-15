@@ -14,9 +14,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
     ...options,
   });
-  const payload = (await response.json().catch(() => ({}))) as T & { message?: string };
-  if (!response.ok) throw new Error(payload.message || "The backend request failed.");
-  return payload;
+  const raw = await response.text();
+  let payload: (T & { error?: string; message?: string }) | null = null;
+  try {
+    payload = raw ? JSON.parse(raw) as T & { error?: string; message?: string } : null;
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    const detail = payload?.message || payload?.error || raw || response.statusText || "The backend request failed.";
+    throw new Error(`${detail} (HTTP ${response.status})`);
+  }
+  return (payload || {}) as T;
 }
 
 export function backendEnabled() {
