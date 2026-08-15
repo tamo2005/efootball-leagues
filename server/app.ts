@@ -505,7 +505,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       GROUP BY g.player_email, g.scorer_name, g.team_id, t.name
       ORDER BY goals DESC, g.scorer_name`,
   );
-  const scorerReviews = user.role === "admin" ? (await ensureScorerReviewTable(), await scorerReviewRows()) : [];
+  const scorerReviews = user.role === "admin" ? (await backfillScorerReviewRecords(), await scorerReviewRows()) : [];
   response.json({
     season,
     teams,
