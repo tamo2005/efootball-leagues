@@ -53,6 +53,191 @@ function duplicateTeamError(error: unknown) {
   return new ApiError(409, "TEAM_IN_USE", "That team name or team code already exists. Choose different values.");
 }
 
+const HUGGING_FACE_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
+const DEFAULT_HUGGING_FACE_MODEL = "Qwen/Qwen3-4B-Instruct-2507";
+
+type ScorerReviewModelResult = {
+  suggestedFullName: string;
+  confidence: number;
+  reason: string;
+  matchedEmail: string | null;
+  needsManualReview: boolean;
+};
+
+function huggingFaceConfig() {
+  const token = process.env.HF_TOKEN?.trim();
+  if (!token) return null;
+  return { token, model: process.env.HF_MODEL?.trim() || DEFAULT_HUGGING_FACE_MODEL };
+}
+
+let scorerReviewTableReady: Promise<void> | null = null;
+async function ensureScorerReviewTable() {
+  if (!isDatabaseConfigured()) return;
+  if (!scorerReviewTableReady) {
+    scorerReviewTableReady = query(`
+      CREATE TABLE IF NOT EXISTS scorer_name_reviews (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        match_id BIGINT UNSIGNED NOT NULL,
+        goal_id BIGINT UNSIGNED NULL,
+        team_id BIGINT UNSIGNED NOT NULL,
+        submitted_name VARCHAR(120) NOT NULL,
+        suggested_name VARCHAR(120) NULL,
+        approved_name VARCHAR(120) NULL,
+        confidence DECIMAL(5,4) NULL,
+        reason VARCHAR(255) NULL,
+        matched_email VARCHAR(320) NULL,
+        status ENUM('PENDING', 'APPROVED', 'REJECTED', 'FAILED') NOT NULL DEFAULT 'PENDING',
+        model VARCHAR(160) NULL,
+        error_message VARCHAR(255) NULL,
+        reviewed_by_email VARCHAR(320) NULL,
+        reviewed_at BIGINT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        INDEX scorer_reviews_status_idx (status, created_at),
+        INDEX scorer_reviews_match_idx (match_id),
+        INDEX scorer_reviews_team_idx (team_id),
+        CONSTRAINT scorer_reviews_match_fk FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+        CONSTRAINT scorer_reviews_team_fk FOREIGN KEY (team_id) REFERENCES teams(id),
+        CONSTRAINT scorer_reviews_matched_user_fk FOREIGN KEY (matched_email) REFERENCES users(email) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `).then(() => undefined);
+  }
+  await scorerReviewTableReady;
+}
+
+function normalizeName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function clipText(value: string, length: number) {
+  return value.trim().slice(0, length);
+}
+
+function modelContent(payload: unknown) {
+  const message = (payload as { choices?: Array<{ message?: { content?: unknown } }> } | null)?.choices?.[0]?.message?.content;
+  if (typeof message === "string") return message;
+  if (Array.isArray(message)) return message.map((part) => typeof part === "string" ? part : String((part as { text?: unknown }).text || "")).join("");
+  return "";
+}
+
+function parseScorerReview(raw: string, submittedName: string, knownPlayers: Array<{ email: string; displayName: string }>): ScorerReviewModelResult {
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
+  if (!jsonText) throw new Error("The name-review model did not return JSON.");
+  const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+  const suggestedFullName = clipText(String(parsed.suggestedFullName || parsed.suggestedName || submittedName), 120);
+  if (!suggestedFullName) throw new Error("The name-review model returned an empty name.");
+  let confidence = Number(parsed.confidence);
+  if (!Number.isFinite(confidence)) confidence = 0;
+  if (confidence > 1) confidence /= 100;
+  confidence = Math.max(0, Math.min(1, confidence));
+  const requestedEmail = typeof parsed.matchedEmail === "string" ? parsed.matchedEmail.trim().toLowerCase() : "";
+  const exactPlayer = knownPlayers.find((player) => normalizeName(player.displayName) === normalizeName(suggestedFullName));
+  const matchedPlayer = knownPlayers.find((player) => player.email.toLowerCase() === requestedEmail) || exactPlayer;
+  return {
+    suggestedFullName,
+    confidence,
+    reason: clipText(String(parsed.reason || "Name normalized for admin review."), 255),
+    matchedEmail: matchedPlayer?.email || null,
+    needsManualReview: parsed.needsManualReview !== false || !matchedPlayer,
+  };
+}
+
+async function processScorerNameReview(reviewId: number) {
+  const reviewRows = await query<Array<{ id: number; match_id: number; goal_id: number | null; team_id: number; submitted_name: string; team_name: string }>>(
+    `SELECT r.id, r.match_id, r.goal_id, r.team_id, r.submitted_name, t.name AS team_name
+       FROM scorer_name_reviews r JOIN teams t ON t.id = r.team_id
+      WHERE r.id = :reviewId LIMIT 1`,
+    { reviewId },
+  );
+  const review = reviewRows[0];
+  if (!review) return { reviewId, status: "MISSING" as const };
+  const knownPlayers = await query<Array<{ email: string; display_name: string }>>(
+    `SELECT u.email, u.display_name
+       FROM users u JOIN team_memberships tm ON tm.user_email = u.email
+      WHERE tm.team_id = :teamId AND u.status = 'ACTIVE'
+      ORDER BY u.display_name`,
+    { teamId: review.team_id },
+  );
+  const previousNames = await query<Array<{ scorer_name: string }>>(
+    `SELECT DISTINCT g.scorer_name
+       FROM goals g JOIN matches m ON m.id = g.match_id
+      WHERE g.team_id = :teamId AND g.id <> COALESCE(:goalId, 0)
+      ORDER BY g.scorer_name LIMIT 100`,
+    { teamId: review.team_id, goalId: review.goal_id || 0 },
+  );
+  const config = huggingFaceConfig();
+  if (!config) {
+    await query(
+      `UPDATE scorer_name_reviews SET status = 'FAILED', error_message = :message, updated_at = :now WHERE id = :reviewId`,
+      { reviewId, message: "Hugging Face is not configured yet. Add HF_TOKEN in Vercel to analyze names.", now: Date.now() },
+    );
+    return { reviewId, status: "FAILED" as const };
+  }
+  const playerContext = knownPlayers.map((player) => `${player.display_name} <${player.email}>`).join("\\n") || "No registered players yet.";
+  const previousContext = previousNames.map((item) => item.scorer_name).join(", ") || "No previous scorer names yet.";
+  const prompt = [
+    "You normalize eFootball scorer names for an administrator. Do not invent a real person or silently approve anything.",
+    "Correct spelling, casing, spacing, and common abbreviations only when the supplied context supports it. Prefer an exact registered player from the team roster when one is an obvious match.",
+    "Return only one JSON object with exactly these keys: suggestedFullName, confidence, reason, matchedEmail, needsManualReview.",
+    "confidence must be a number from 0 to 1. matchedEmail must be null unless the suggestion exactly matches one registered player.",
+    "Set needsManualReview to true whenever the correction is uncertain or the name is not an exact registered player.",
+    `Team: ${review.team_name}`,
+    `Submitted scorer name: ${review.submitted_name}`,
+    `Registered team players:\\n${playerContext}`,
+    `Previous scorer names for this team: ${previousContext}`,
+  ].join("\\n\\n");
+  try {
+    const modelResponse = await fetch(HUGGING_FACE_CHAT_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "You are a careful name-normalization assistant. Return valid JSON only." }, { role: "user", content: prompt }], temperature: 0, max_tokens: 220 }),
+    });
+    const payload = await modelResponse.json().catch(() => null);
+    if (!modelResponse.ok) throw new Error(`Hugging Face returned HTTP ${modelResponse.status}.`);
+    const result = parseScorerReview(modelContent(payload), review.submitted_name, knownPlayers.map((player) => ({ email: player.email, displayName: player.display_name })));
+    await query(
+      `UPDATE scorer_name_reviews
+          SET suggested_name = :suggestedName, confidence = :confidence, reason = :reason,
+              matched_email = :matchedEmail, status = 'PENDING', model = :model,
+              error_message = NULL, updated_at = :now
+        WHERE id = :reviewId`,
+      { reviewId, suggestedName: result.suggestedFullName, confidence: result.confidence, reason: result.reason, matchedEmail: result.matchedEmail, model: config.model, now: Date.now() },
+    );
+    return { reviewId, status: "PENDING" as const };
+  } catch (error) {
+    await query(
+      `UPDATE scorer_name_reviews SET status = 'FAILED', model = :model, error_message = :message, updated_at = :now WHERE id = :reviewId`,
+      { reviewId, model: config.model, message: clipText(error instanceof Error ? error.message : "Hugging Face name review failed.", 255), now: Date.now() },
+    );
+    return { reviewId, status: "FAILED" as const };
+  }
+}
+
+async function processScorerNameReviews(reviewIds: number[]) {
+  const results: Array<{ reviewId: number; status: string }> = [];
+  for (const reviewId of reviewIds.slice(0, 50)) results.push(await processScorerNameReview(reviewId));
+  return results;
+}
+
+async function scorerReviewRows(status?: string) {
+  const statusFilter = status === "APPROVED" || status === "REJECTED" || status === "FAILED" || status === "PENDING" ? status : null;
+  return query<Array<Record<string, unknown>>>(
+    `SELECT r.id, r.match_id, r.goal_id, r.team_id, r.submitted_name, r.suggested_name,
+            r.approved_name, r.confidence, r.reason, r.matched_email, r.status,
+            r.model, r.error_message, r.created_at, r.updated_at,
+            t.name AS team_name, m.matchday, h.name AS home_team_name, a.name AS away_team_name
+       FROM scorer_name_reviews r
+       JOIN teams t ON t.id = r.team_id
+       JOIN matches m ON m.id = r.match_id
+       JOIN teams h ON h.id = m.home_team_id
+       JOIN teams a ON a.id = m.away_team_id
+      WHERE (:status IS NULL OR r.status = :status)
+      ORDER BY CASE r.status WHEN 'FAILED' THEN 0 WHEN 'PENDING' THEN 1 ELSE 2 END, r.created_at DESC
+      LIMIT 100`,
+    { status: statusFilter },
+  );
+}
+
 const asyncRoute = (handler: (request: Request, response: Response) => Promise<void>) => (request: Request, response: Response, next: NextFunction) => {
   handler(request, response).catch(next);
 };
@@ -304,6 +489,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       GROUP BY g.player_email, g.scorer_name, g.team_id, t.name
       ORDER BY goals DESC, g.scorer_name`,
   );
+  const scorerReviews = user.role === "admin" ? (await ensureScorerReviewTable(), await scorerReviewRows()) : [];
   response.json({
     season,
     teams,
@@ -312,6 +498,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
     goals,
     standings: calculateStandings(teams.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code })), confirmedMatches.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: Number(match.home_score), awayScore: Number(match.away_score) }))),
     stats,
+    scorerReviews,
   });
 }));
 
@@ -343,6 +530,101 @@ app.get("/api/teams/:teamId/scorers", asyncRoute(async (request, response) => {
     { teamId },
   );
   response.json({ scorers });
+}));
+
+app.get("/api/admin/scorer-reviews", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureScorerReviewTable();
+  response.json({ reviews: await scorerReviewRows(typeof request.query.status === "string" ? request.query.status : undefined) });
+}));
+
+app.post("/api/admin/scorer-reviews/analyze", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureScorerReviewTable();
+  const rows = await query<Array<{ id: number }>>(
+    `SELECT id FROM scorer_name_reviews
+      WHERE status IN ('PENDING', 'FAILED')
+      ORDER BY CASE WHEN suggested_name IS NULL THEN 0 ELSE 1 END, created_at ASC
+      LIMIT 50`,
+  );
+  const results = await processScorerNameReviews(rows.map((row) => Number(row.id)));
+  response.json({ analyzed: results.filter((item) => item.status === "PENDING").length, failed: results.filter((item) => item.status === "FAILED").length, reviews: await scorerReviewRows() });
+}));
+
+app.post("/api/admin/scorer-reviews/:reviewId/approve", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureScorerReviewTable();
+  const reviewId = Number(request.params.reviewId);
+  if (!Number.isInteger(reviewId) || reviewId <= 0) {
+    response.status(400).json({ error: "INVALID_REVIEW_ID", message: "That scorer review identifier is invalid." });
+    return;
+  }
+  const rows = await query<Array<{ id: number; goal_id: number | null; suggested_name: string | null; matched_email: string | null; status: string }>>(
+    "SELECT id, goal_id, suggested_name, matched_email, status FROM scorer_name_reviews WHERE id = :reviewId LIMIT 1",
+    { reviewId },
+  );
+  const review = rows[0];
+  if (!review) {
+    response.status(404).json({ error: "REVIEW_NOT_FOUND", message: "That scorer review no longer exists." });
+    return;
+  }
+  if (review.status === "APPROVED") {
+    response.json({ reviewId, status: "APPROVED", alreadyApplied: true });
+    return;
+  }
+  const approvedName = clipText(String(request.body?.approvedName || review.suggested_name || ""), 120);
+  if (!approvedName) {
+    response.status(400).json({ error: "SUGGESTION_REQUIRED", message: "Analyze the scorer name before approving it." });
+    return;
+  }
+  const now = Date.now();
+  await withTransaction(async (connection) => {
+    if (review.goal_id) {
+      await connection.execute("UPDATE goals SET scorer_name = ?, player_email = ? WHERE id = ?", [approvedName, review.matched_email || null, review.goal_id]);
+    }
+    await connection.execute(
+      `UPDATE scorer_name_reviews
+          SET approved_name = ?, status = 'APPROVED', reviewed_by_email = ?, reviewed_at = ?, updated_at = ?
+        WHERE id = ?`,
+      [approvedName, user.email, now, now, reviewId],
+    );
+    await connection.execute(
+      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+       VALUES (?, 'SCORER_NAME_APPROVED', 'scorer_name_review', ?, JSON_OBJECT('approvedName', ?), ?)`,
+      [user.email, String(reviewId), approvedName, now],
+    );
+  });
+  response.json({ reviewId, status: "APPROVED", approvedName });
+}));
+
+app.post("/api/admin/scorer-reviews/:reviewId/reject", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureScorerReviewTable();
+  const reviewId = Number(request.params.reviewId);
+  if (!Number.isInteger(reviewId) || reviewId <= 0) {
+    response.status(400).json({ error: "INVALID_REVIEW_ID", message: "That scorer review identifier is invalid." });
+    return;
+  }
+  const now = Date.now();
+  const result = await query<{ affectedRows: number } & Record<string, never>>(
+    `UPDATE scorer_name_reviews SET status = 'REJECTED', reviewed_by_email = :email, reviewed_at = :now, updated_at = :now
+      WHERE id = :reviewId AND status <> 'APPROVED'`,
+    { reviewId, email: user.email, now },
+  );
+  if (!(result as unknown as { affectedRows: number }).affectedRows) {
+    response.status(404).json({ error: "REVIEW_NOT_FOUND", message: "That scorer review is already approved or no longer exists." });
+    return;
+  }
+  await query(
+    `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+     VALUES (:email, 'SCORER_NAME_REJECTED', 'scorer_name_review', :reviewId, JSON_OBJECT(), :now)`,
+    { email: user.email, reviewId: String(reviewId), now },
+  );
+  response.json({ reviewId, status: "REJECTED" });
 }));
 
 app.post("/api/admin/teams", asyncRoute(async (request, response) => {
@@ -772,21 +1054,30 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     return;
   }
   const now = Date.now();
+  await ensureScorerReviewTable();
   await withTransaction(async (connection) => {
     await connection.execute(
       `UPDATE matches SET status = 'PENDING', home_score = ?, away_score = ?, submitted_by_email = ?, submitted_at = ?, updated_at = ? WHERE id = ?`,
       [homeScore, awayScore, user.email, now, now, matchId],
     );
+    await connection.execute("DELETE FROM scorer_name_reviews WHERE match_id = ?", [matchId]);
     await connection.execute("DELETE FROM goals WHERE match_id = ?", [matchId]);
     for (const goal of goals) {
       const teamId = Number(goal.teamId);
       const minute = Number(goal.minute);
       const scorerName = String(goal.scorerName || "").trim();
       if (!Number.isInteger(teamId) || !Number.isInteger(minute) || !scorerName || minute < 1 || minute > 130) continue;
-      await connection.execute(
+      const [goalResult] = await connection.execute(
         `INSERT INTO goals (match_id, team_id, player_email, scorer_name, minute, created_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [matchId, teamId, typeof goal.playerEmail === "string" ? goal.playerEmail.trim().toLowerCase() : null, scorerName, minute, now],
+      );
+      const goalId = Number((goalResult as { insertId?: number }).insertId || 0);
+      await connection.execute(
+        `INSERT INTO scorer_name_reviews
+          (match_id, goal_id, team_id, submitted_name, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`,
+        [matchId, goalId || null, teamId, scorerName, now, now],
       );
     }
     await connection.execute(

@@ -65,7 +65,7 @@ import {
   type TiebreakerRule,
   type UserAccount,
 } from "@/lib/league-db";
-import { backendApproveTeam, backendConfirmResult, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendLogin, backendLogout, backendMe, backendRegister, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, backendUpdateTeam, mergeBackendDashboard, toLocalUser } from "@/lib/backend-api";
+import { backendAnalyzeScorerReviews, backendApproveScorerReview, backendApproveTeam, backendConfirmResult, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendLogin, backendLogout, backendMe, backendRegister, backendRejectScorerReview, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, backendUpdateTeam, mergeBackendDashboard, toLocalUser, type BackendScorerReview } from "@/lib/backend-api";
 
 type View = "overview" | "fixtures" | "teams" | "table" | "database" | "rules";
 type ResultInput = { id: string; teamId: string; playerName: string; playerEmail?: string; minute: string };
@@ -264,8 +264,13 @@ function PlayerStatsPanel({ stats }: { stats: PlayerStat[] }) {
   return <section className="panel stats-panel"><div className="panel-header"><div><p className="eyebrow">LIVE PLAYER INTELLIGENCE</p><h2>Form & scoring</h2></div><BarChart3 size={18} className="panel-icon" /></div><div className="player-stat-grid">{stats.slice(0, 8).map((player, index) => <article className="player-stat-card" key={`${player.teamId}-${player.playerEmail || player.name}`}><div className="player-stat-heading"><span className="scorer-rank">{String(index + 1).padStart(2, "0")}</span><div className="scorer-avatar">{initials(player.name)}</div><div><strong>{player.name}</strong><small>{player.teamName}</small></div></div><div className="player-stat-metrics"><span><b>{player.officialGoals}</b><small>official</small></span><span><b>{player.pendingGoals}</b><small>pending</small></span><span><b>{player.appearances}</b><small>matches</small></span><span><b>{player.averageMinute || "—"}</b><small>avg min</small></span></div></article>)}{!stats.length && <p className="muted-copy">Player data will appear as scorers are logged.</p>}</div><p className="table-footnote"><Eye size={14} /> Pending goals are visible immediately but only confirmed goals count toward the official Golden Boot.</p></section>;
 }
 
-function DatabasePanel({ database, user }: { database: LeagueDatabase; user: UserAccount }) {
-  return <section className="view-panel"><div className="database-hero"><div><p className="eyebrow">DATABASE CONTROL CENTER</p><h2>Identity, access & records</h2><p>All league records are typed, permission-aware, and loaded from the live TiDB database.</p></div><span className="health-badge"><span /> Schema healthy</span></div><div className="database-grid"><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">ACCESS DIRECTORY</p><h2>{database.users.length} accounts</h2></div><UserCog size={18} className="panel-icon" /></div><div className="user-directory">{database.users.map((account) => { const team = account.teamId ? teamById(database.teams, account.teamId) : undefined; return <div className="user-directory-row" key={account.id}><span className="user-avatar">{initials(account.name)}</span><div><strong>{account.name}</strong><small>{account.email}{team ? ` · ${team.name}` : " · Competition-wide"}</small></div><span className={`role-badge role-${account.role}`}>{account.role}</span></div>; })}</div><p className="permission-note"><ShieldCheck size={14} /> You are signed in as <strong>{user.name}</strong>. {user.role === "admin" ? "Admin actions are unlocked." : "Player actions are limited to assigned fixtures."}</p></article><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">RECORD COUNTS</p><h2>Source of truth</h2></div><Database size={18} className="panel-icon" /></div><div className="record-counts"><div><strong>{database.teams.length}</strong><span>teams</span></div><div><strong>{database.matches.length}</strong><span>fixtures</span></div><div><strong>{database.matches.filter((match) => match.status === "CONFIRMED").length}</strong><span>official results</span></div><div><strong>{database.users.length}</strong><span>users</span></div></div><p className="muted-copy">This dashboard is connected to the production database. Empty sections mean records have not been created yet.</p></article></div></section>;
+function ScorerReviewPanel({ reviews, onAnalyze, onApprove, onReject, busy }: { reviews: BackendScorerReview[]; onAnalyze: () => void; onApprove: (reviewId: number) => void; onReject: (reviewId: number) => void; busy: boolean }) {
+  const actionable = reviews.filter((review) => review.status === "PENDING" || review.status === "FAILED");
+  return <section className="panel scorer-review-panel"><div className="panel-header"><div><p className="eyebrow">AI NAME REVIEW</p><h2>{actionable.length ? `${actionable.length} names need your decision` : "Scorer names are clear"}</h2><p className="section-caption">Hugging Face only suggests a correction. Nothing becomes official until you approve it.</p></div><Button onClick={onAnalyze} disabled={busy || !reviews.some((review) => review.status === "PENDING" || review.status === "FAILED")}><Sparkles size={15} /> {busy ? "Analyzing…" : "Analyze pending names"}</Button></div>{!reviews.length ? <div className="scorer-review-empty"><Sparkles size={22} /><strong>No scorer names are waiting.</strong><span>New submitted goals will appear here for AI-assisted review.</span></div> : <div className="scorer-review-list">{reviews.slice(0, 50).map((review) => { const confidence = review.confidence === null ? null : Math.round(review.confidence * 100); const canDecide = review.status === "PENDING" && Boolean(review.suggested_name); return <article className={`scorer-review-row review-${review.status.toLowerCase()}`} key={review.id}><div className="scorer-review-main"><div className="scorer-review-context"><span className="scorer-review-status">{review.status === "FAILED" ? "Analysis failed" : review.status === "PENDING" ? review.suggested_name ? "Awaiting approval" : "Queued for analysis" : review.status}</span><small>{review.team_name} · {review.home_team_name} vs {review.away_team_name} · Matchday {review.matchday}</small></div><div className="scorer-name-comparison"><div><small>Submitted name</small><strong>{review.submitted_name}</strong></div><ArrowRight size={15} /><div><small>Suggested full name</small><strong>{review.suggested_name || "Waiting for Hugging Face analysis"}</strong></div></div><p className="scorer-review-reason">{review.error_message || review.reason || "The AI suggestion will appear after analysis."}{confidence !== null && <span className="scorer-confidence">{confidence}% confidence</span>}</p></div>{canDecide && <div className="scorer-review-actions"><Button onClick={() => onApprove(review.id)}><Check size={14} /> Approve</Button><Button variant="outline" onClick={() => onReject(review.id)}><X size={14} /> Reject</Button></div>}</article>; })}</div>}</section>;
+}
+
+function DatabasePanel({ database, user, scorerReviews, onAnalyzeScorerReviews, onApproveScorerReview, onRejectScorerReview, scorerReviewBusy }: { database: LeagueDatabase; user: UserAccount; scorerReviews: BackendScorerReview[]; onAnalyzeScorerReviews: () => void; onApproveScorerReview: (reviewId: number) => void; onRejectScorerReview: (reviewId: number) => void; scorerReviewBusy: boolean }) {
+  return <section className="view-panel"><div className="database-hero"><div><p className="eyebrow">DATABASE CONTROL CENTER</p><h2>Identity, access & records</h2><p>All league records are typed, permission-aware, and loaded from the live TiDB database.</p></div><span className="health-badge"><span /> Schema healthy</span></div><div className="database-grid"><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">ACCESS DIRECTORY</p><h2>{database.users.length} accounts</h2></div><UserCog size={18} className="panel-icon" /></div><div className="user-directory">{database.users.map((account) => { const team = account.teamId ? teamById(database.teams, account.teamId) : undefined; return <div className="user-directory-row" key={account.id}><span className="user-avatar">{initials(account.name)}</span><div><strong>{account.name}</strong><small>{account.email}{team ? ` · ${team.name}` : " · Competition-wide"}</small></div><span className={`role-badge role-${account.role}`}>{account.role}</span></div>; })}</div><p className="permission-note"><ShieldCheck size={14} /> You are signed in as <strong>{user.name}</strong>. {user.role === "admin" ? "Admin actions are unlocked." : "Player actions are limited to assigned fixtures."}</p></article><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">RECORD COUNTS</p><h2>Source of truth</h2></div><Database size={18} className="panel-icon" /></div><div className="record-counts"><div><strong>{database.teams.length}</strong><span>teams</span></div><div><strong>{database.matches.length}</strong><span>fixtures</span></div><div><strong>{database.matches.filter((match) => match.status === "CONFIRMED").length}</strong><span>official results</span></div><div><strong>{database.users.length}</strong><span>users</span></div></div><p className="muted-copy">This dashboard is connected to the production database. Empty sections mean records have not been created yet.</p></article></div><ScorerReviewPanel reviews={scorerReviews} onAnalyze={onAnalyzeScorerReviews} onApprove={onApproveScorerReview} onReject={onRejectScorerReview} busy={scorerReviewBusy} /></section>;
 }
 
 function RulesPanel({ rules, isAdmin, onReset }: { rules: TiebreakerRule[]; isAdmin: boolean; onReset: () => void }) {
@@ -397,6 +402,8 @@ export default function Home() {
   const [fixtureScope, setFixtureScope] = useState<"mine" | "all">("all");
   const [fixtureFilter, setFixtureFilter] = useState<"all" | "upcoming" | "pending" | "completed">("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const [scorerReviews, setScorerReviews] = useState<BackendScorerReview[]>([]);
+  const [scorerReviewBusy, setScorerReviewBusy] = useState(false);
 
   const useBackend = backendEnabled();
   useEffect(() => saveDatabase(database), [database]);
@@ -409,7 +416,7 @@ export default function Home() {
   }, [useBackend]);
   useEffect(() => {
     if (!useBackend || !remoteUser) return;
-    backendDashboard().then((snapshot) => setDatabase((current) => mergeBackendDashboard(current, snapshot))).catch((error) => toast.error("Could not load league data", { description: error instanceof Error ? error.message : "Try again shortly." }));
+    backendDashboard().then((snapshot) => { setDatabase((current) => mergeBackendDashboard(current, snapshot)); setScorerReviews(snapshot.scorerReviews || []); }).catch((error) => toast.error("Could not load league data", { description: error instanceof Error ? error.message : "Try again shortly." }));
   }, [useBackend, remoteUser?.id]);
 
   const user = useBackend ? remoteUser : getCurrentUser(database);
@@ -474,6 +481,43 @@ export default function Home() {
     if (!useBackend) return;
     const snapshot = await backendDashboard();
     setDatabase((current) => mergeBackendDashboard(current, snapshot));
+    setScorerReviews(snapshot.scorerReviews || []);
+  }
+
+  async function analyzeScorerReviews() {
+    if (!isAdmin || !useBackend) return;
+    setScorerReviewBusy(true);
+    try {
+      const result = await backendAnalyzeScorerReviews();
+      setScorerReviews(result.reviews || []);
+      toast.success("Scorer names analyzed", { description: `${result.analyzed} suggestion${result.analyzed === 1 ? "" : "s"} ready for your approval${result.failed ? ` · ${result.failed} failed` : ""}.` });
+    } catch (error) {
+      toast.error("AI name review failed", { description: error instanceof Error ? error.message : "Try again shortly." });
+    } finally {
+      setScorerReviewBusy(false);
+    }
+  }
+
+  async function approveScorerReview(reviewId: number) {
+    if (!isAdmin || !useBackend) return;
+    try {
+      await backendApproveScorerReview(reviewId);
+      await refreshRemoteDashboard();
+      toast.success("Scorer name approved", { description: "The approved full name is now used for the official player record." });
+    } catch (error) {
+      toast.error("Scorer name could not be approved", { description: error instanceof Error ? error.message : "Try again." });
+    }
+  }
+
+  async function rejectScorerReview(reviewId: number) {
+    if (!isAdmin || !useBackend) return;
+    try {
+      await backendRejectScorerReview(reviewId);
+      await refreshRemoteDashboard();
+      toast("Suggestion rejected", { description: "The original submitted name remains unchanged." });
+    } catch (error) {
+      toast.error("Scorer suggestion could not be rejected", { description: error instanceof Error ? error.message : "Try again." });
+    }
   }
 
   async function saveResult(matchId: string, homeScore: number, awayScore: number, goals: Goal[]) {
@@ -733,7 +777,7 @@ export default function Home() {
 
           {activeView === "table" && <section className="view-panel"><div className="table-view-grid"><section className="panel full-table-panel"><div className="panel-header"><div><p className="eyebrow">OFFICIAL STANDINGS</p><h2>{database.league.name} table</h2></div><span className="table-updated"><span />Updated live</span></div><StandingTable standings={standings} /></section><aside className="panel golden-boot-panel"><div className="panel-header"><div><p className="eyebrow">PLAYER STATS</p><h2>Golden Boot</h2></div><Trophy size={18} className="panel-icon" /></div><div className="scorer-list">{scorers.slice(0, 6).map((player, index) => <div className="scorer-row" key={`${player.teamId}-${player.playerEmail || player.name}`}><span className="scorer-rank">{String(index + 1).padStart(2, "0")}</span><div className="scorer-avatar">{initials(player.name)}</div><div><strong>{player.name}</strong><small>{player.teamName}</small></div><b>{player.goals}</b></div>)}{!scorers.length && <p className="muted-copy">Goal scorer data will appear after the first confirmed result.</p>}</div></aside></div><PlayerStatsPanel stats={playerStats} /></section>}
 
-          {activeView === "database" && <DatabasePanel database={database} user={user} />}
+          {activeView === "database" && <DatabasePanel database={database} user={user} scorerReviews={scorerReviews} onAnalyzeScorerReviews={analyzeScorerReviews} onApproveScorerReview={approveScorerReview} onRejectScorerReview={rejectScorerReview} scorerReviewBusy={scorerReviewBusy} />}
           {activeView === "rules" && <RulesPanel rules={database.tiebreakers} isAdmin={isAdmin} onReset={resetRules} />}
         </main>
         <footer className="league-footer"><span><Database size={14} /> Source of truth: confirmed matches</span><span>eLeague Manager · {database.league.season}</span>{useBackend ? <span>Live TiDB records · protected</span> : isAdmin ? <button onClick={resetDatabase}>Reset demo data</button> : <span>Player view · protected</span>}</footer>

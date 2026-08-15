@@ -802,3 +802,49 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
 .match-goals-summary.official span { color: #4d755c; font-weight: 700; }
 .match-goals-summary.provisional strong { color: #aa6b31; }
 @media (max-width: 760px) { .fixture-toolbar { align-items: stretch; flex-direction: column; gap: 13px; } .fixture-toolbar-left { width: 100%; } .fixture-scope-tabs { overflow-x: auto; } .fixture-scope-tabs button { flex: 1 0 auto; justify-content: center; } .search-field { width: 100%; } .winner-tag { font-size: 6px; } .match-goals-summary { width: 100%; } }
+
+
+/* AI-assisted scorer-name review */
+.scorer-review-panel { margin-top: 17px; padding: 27px 28px; background: linear-gradient(135deg, #fff 0%, #fbfdfb 100%); }
+.scorer-review-panel .panel-header { align-items: center; }
+.scorer-review-panel .panel-header > div { min-width: 0; }
+.scorer-review-panel .panel-header h2 { margin-bottom: 7px; }
+.scorer-review-panel .panel-header > [data-slot="button"] { flex: 0 0 auto; }
+.scorer-review-panel .section-caption { max-width: 620px; margin: 0; color: #76868b; font-size: 11px; line-height: 1.5; }
+.scorer-review-empty { display: grid; justify-items: center; gap: 7px; margin-top: 22px; padding: 32px 20px; border: 1px dashed #d7e4df; border-radius: 8px; background: #f8fbf8; color: #74847f; text-align: center; }
+.scorer-review-empty svg { color: #86aa75; }
+.scorer-review-empty strong { color: #2b4437; font-size: 12px; }
+.scorer-review-empty span { font-size: 11px; }
+.scorer-review-list { display: grid; gap: 10px; margin-top: 23px; }
+.scorer-review-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 17px; border: 1px solid #e0e9e4; border-left: 3px solid #d3ded9; border-radius: 8px; background: #fff; }
+.scorer-review-row.review-pending { border-left-color: #e2b259; background: #fffdf7; }
+.scorer-review-row.review-failed { border-left-color: #df8a82; background: #fff9f8; }
+.scorer-review-row.review-approved { border-left-color: #8dc476; }
+.scorer-review-row.review-rejected { opacity: .76; }
+.scorer-review-main { min-width: 0; flex: 1; }
+.scorer-review-context { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.scorer-review-context small { color: #829197; font-size: 10px; }
+.scorer-review-status { display: inline-flex; align-items: center; padding: 4px 7px; border-radius: 4px; background: #edf3ef; color: #567063; font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.review-pending .scorer-review-status { background: #fff0cd; color: #997023; }
+.review-failed .scorer-review-status { background: #ffe5e1; color: #b65f56; }
+.scorer-name-comparison { display: grid; grid-template-columns: minmax(120px, .8fr) auto minmax(170px, 1.2fr); align-items: center; gap: 14px; margin-top: 14px; }
+.scorer-name-comparison > div { min-width: 0; }
+.scorer-name-comparison > svg { color: #9cadad; }
+.scorer-name-comparison small { display: block; margin-bottom: 5px; color: #9aa8a8; font-size: 9px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+.scorer-name-comparison strong { display: block; overflow: hidden; color: #263d3c; font-family: "Space Grotesk", sans-serif; font-size: 16px; font-weight: 650; letter-spacing: -.04em; text-overflow: ellipsis; white-space: nowrap; }
+.scorer-name-comparison > div:last-child strong { color: #315d42; }
+.scorer-review-reason { display: flex; align-items: center; gap: 10px; margin: 10px 0 0; color: #7d8989; font-size: 10px; line-height: 1.45; }
+.scorer-confidence { display: inline-flex; flex: 0 0 auto; padding: 3px 6px; border-radius: 3px; background: #eaf5e7; color: #638956; font-size: 9px; font-weight: 800; }
+.scorer-review-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.scorer-review-actions button { min-height: 34px; padding-inline: 10px; font-size: 10px; }
+@media (max-width: 740px) {
+  .scorer-review-panel { padding: 21px 17px; }
+  .scorer-review-panel .panel-header { align-items: flex-start; flex-direction: column; }
+  .scorer-review-panel .panel-header > [data-slot="button"] { width: 100%; justify-content: center; }
+  .scorer-review-row { align-items: stretch; flex-direction: column; gap: 14px; }
+  .scorer-name-comparison { grid-template-columns: 1fr; gap: 8px; }
+  .scorer-name-comparison > svg { display: none; }
+  .scorer-review-actions { width: 100%; }
+  .scorer-review-actions button { flex: 1; justify-content: center; }
+  .scorer-review-reason { align-items: flex-start; flex-direction: column; gap: 6px; }
+}

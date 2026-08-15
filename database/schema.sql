@@ -116,3 +116,30 @@ CREATE TABLE IF NOT EXISTS sessions (
   INDEX sessions_expiry_idx (expires_at),
   CONSTRAINT sessions_user_fk FOREIGN KEY (user_email) REFERENCES users(email) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS scorer_name_reviews (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  match_id BIGINT UNSIGNED NOT NULL,
+  goal_id BIGINT UNSIGNED NULL,
+  team_id BIGINT UNSIGNED NOT NULL,
+  submitted_name VARCHAR(120) NOT NULL,
+  suggested_name VARCHAR(120) NULL,
+  approved_name VARCHAR(120) NULL,
+  confidence DECIMAL(5,4) NULL,
+  reason VARCHAR(255) NULL,
+  matched_email VARCHAR(320) NULL,
+  status ENUM('PENDING', 'APPROVED', 'REJECTED', 'FAILED') NOT NULL DEFAULT 'PENDING',
+  model VARCHAR(160) NULL,
+  error_message VARCHAR(255) NULL,
+  reviewed_by_email VARCHAR(320) NULL,
+  reviewed_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  INDEX scorer_reviews_status_idx (status, created_at),
+  INDEX scorer_reviews_match_idx (match_id),
+  INDEX scorer_reviews_team_idx (team_id),
+  CONSTRAINT scorer_reviews_match_fk FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  CONSTRAINT scorer_reviews_team_fk FOREIGN KEY (team_id) REFERENCES teams(id),
+  CONSTRAINT scorer_reviews_matched_user_fk FOREIGN KEY (matched_email) REFERENCES users(email) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

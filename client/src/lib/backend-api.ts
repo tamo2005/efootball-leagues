@@ -72,6 +72,28 @@ export function toLocalUser(user: BackendUser) {
   };
 }
 
+export type BackendScorerReview = {
+  id: number;
+  match_id: number;
+  goal_id: number | null;
+  team_id: number;
+  submitted_name: string;
+  suggested_name: string | null;
+  approved_name: string | null;
+  confidence: number | null;
+  reason: string | null;
+  matched_email: string | null;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "FAILED";
+  model: string | null;
+  error_message: string | null;
+  created_at: number;
+  updated_at: number;
+  team_name: string;
+  matchday: number;
+  home_team_name: string;
+  away_team_name: string;
+};
+
 export type BackendDashboard = {
   season: { id: number; name: string; status: string; matchday_count: number; current_matchday: number } | null;
   teams: Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string; status: string; created_by_email: string | null }>;
@@ -80,6 +102,7 @@ export type BackendDashboard = {
   goals: Array<{ id: number; match_id: number; team_id: number; player_email: string | null; scorer_name: string; minute: number }>;
   standings: Array<Record<string, unknown>>;
   stats: Array<{ player_email: string | null; scorer_name: string; team_id: number; team_name: string; goals: number }>;
+  scorerReviews: BackendScorerReview[];
 };
 
 export function backendDashboard() {
@@ -192,6 +215,18 @@ export function backendApproveTeam(teamId: string, decision: "approve" | "reject
 
 export function backendScorerSuggestions(teamId: string) {
   return request<{ scorers: Array<{ name: string; email: string | null; goals: number }> }>(`/api/teams/${teamId}/scorers`);
+}
+
+export function backendAnalyzeScorerReviews() {
+  return request<{ analyzed: number; failed: number; reviews: BackendScorerReview[] }>("/api/admin/scorer-reviews/analyze", { method: "POST", body: JSON.stringify({}) });
+}
+
+export function backendApproveScorerReview(reviewId: number, approvedName?: string) {
+  return request<{ reviewId: number; status: string; approvedName?: string }>(`/api/admin/scorer-reviews/${reviewId}/approve`, { method: "POST", body: JSON.stringify(approvedName ? { approvedName } : {}) });
+}
+
+export function backendRejectScorerReview(reviewId: number) {
+  return request<{ reviewId: number; status: string }>(`/api/admin/scorer-reviews/${reviewId}/reject`, { method: "POST", body: JSON.stringify({}) });
 }
 
 export function backendRescheduleMatch(matchId: string, kickoffAt: number, reason: string) {
