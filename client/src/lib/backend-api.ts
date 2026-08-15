@@ -59,6 +59,7 @@ export function toLocalUser(user: BackendUser) {
 export type BackendDashboard = {
   season: { id: number; name: string; status: string; matchday_count: number; current_matchday: number } | null;
   teams: Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string }>;
+  users: Array<{ email: string; display_name: string; role: string; status: string; team_id: number | null }>;
   matches: Array<Record<string, unknown>>;
   goals: Array<{ id: number; match_id: number; team_id: number; player_email: string | null; scorer_name: string; minute: number }>;
   standings: Array<Record<string, unknown>>;
@@ -78,6 +79,15 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
     shortName: team.short_code,
     manager: team.manager_name,
     accent: team.accent,
+  }));
+  const users = snapshot.users.map((user) => ({
+    id: user.email,
+    name: user.display_name,
+    email: user.email,
+    role: user.role === "admin" ? "admin" as const : "player" as const,
+    teamId: user.team_id === null ? undefined : String(user.team_id),
+    passwordHash: "",
+    active: user.status === "ACTIVE",
   }));
   const goalsByMatch = new Map<string, Goal[]>();
   for (const goal of snapshot.goals) {
@@ -102,7 +112,9 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
     ...current,
     league: snapshot.season ? { ...current.league, name: snapshot.season.name, season: snapshot.season.name, status: snapshot.season.status === "ACTIVE" ? "ACTIVE" : snapshot.season.status === "COMPLETED" ? "COMPLETED" : "DRAFT", teamsCount: teams.length } : current.league,
     teams,
+    users,
     matches,
+    activities: [],
   };
 }
 

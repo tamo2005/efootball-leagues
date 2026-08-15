@@ -90,6 +90,12 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const seasonRows = await query<Array<{ id: number; name: string; status: string; matchday_count: number; current_matchday: number }>>("SELECT id, name, status, matchday_count, current_matchday FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
   const season = seasonRows[0] || null;
   const teams = await query<Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string }>>("SELECT id, name, short_code, manager_name, accent FROM teams ORDER BY name");
+  const users = await query<Array<{ email: string; display_name: string; role: string; status: string; team_id: number | null }>>(
+    `SELECT u.email, u.display_name, u.role, u.status, tm.team_id
+       FROM users u
+       LEFT JOIN team_memberships tm ON tm.user_email = u.email
+      ORDER BY u.display_name`,
+  );
   const params: Record<string, unknown> = { seasonId: season?.id ?? 0 };
   const teamFilter = user.role === "player" && user.teamId ? "AND (m.home_team_id = :teamId OR m.away_team_id = :teamId)" : "";
   if (user.role === "player" && user.teamId) params.teamId = user.teamId;
@@ -122,6 +128,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
   response.json({
     season,
     teams,
+    users,
     matches,
     goals,
     standings: calculateStandings(teams.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code })), confirmedMatches.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: Number(match.home_score), awayScore: Number(match.away_score) }))),
