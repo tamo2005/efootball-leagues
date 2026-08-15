@@ -89,6 +89,7 @@ export type Standing = Team & {
 
 export type PlayerStat = {
   name: string;
+  playerEmail?: string;
   teamId: string;
   teamName: string;
   officialGoals: number;
@@ -351,8 +352,9 @@ export function livePlayerStats(database: LeagueDatabase): PlayerStat[] {
     const goalsByPlayer = new Map<string, number>();
     match.goals.forEach((goal) => {
       const team = teamById(database.teams, goal.teamId);
-      const key = `${goal.playerName.toLowerCase()}-${goal.teamId}`;
-      const current = totals.get(key) ?? { name: goal.playerName, teamId: goal.teamId, teamName: team?.name ?? "Unknown", officialGoals: 0, pendingGoals: 0, totalGoals: 0, appearances: 0, averageMinute: 0, lastMinute: 0, hatTricks: 0, matchIds: new Set<string>(), minuteTotal: 0 };
+      const scorerIdentity = goal.playerEmail?.trim().toLowerCase() || goal.playerName.trim().toLowerCase();
+      const key = `${goal.teamId}-${scorerIdentity}`;
+      const current = totals.get(key) ?? { name: goal.playerName, playerEmail: goal.playerEmail, teamId: goal.teamId, teamName: team?.name ?? "Unknown", officialGoals: 0, pendingGoals: 0, totalGoals: 0, appearances: 0, averageMinute: 0, lastMinute: 0, hatTricks: 0, matchIds: new Set<string>(), minuteTotal: 0 };
       current.totalGoals += 1;
       current.minuteTotal += goal.minute;
       current.lastMinute = Math.max(current.lastMinute, goal.minute);
@@ -371,7 +373,7 @@ export function livePlayerStats(database: LeagueDatabase): PlayerStat[] {
 }
 
 export function leaderboard(database: LeagueDatabase) {
-  return livePlayerStats(database).filter((player) => player.officialGoals > 0).map((player) => ({ name: player.name, teamId: player.teamId, goals: player.officialGoals, teamName: player.teamName }));
+  return livePlayerStats(database).filter((player) => player.officialGoals > 0).map((player) => ({ name: player.name, playerEmail: player.playerEmail, teamId: player.teamId, goals: player.officialGoals, teamName: player.teamName }));
 }
 
 export function countConfirmed(database: LeagueDatabase) {

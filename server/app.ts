@@ -224,10 +224,10 @@ app.get("/api/teams/:teamId/scorers", asyncRoute(async (request, response) => {
     return;
   }
   const scorers = await query<Array<{ name: string; email: string | null; goals: number }>>(
-    `SELECT g.scorer_name AS name, MAX(g.player_email) AS email, COUNT(*) AS goals
+    `SELECT g.scorer_name AS name, g.player_email AS email, COUNT(*) AS goals
        FROM goals g JOIN matches m ON m.id = g.match_id
       WHERE g.team_id = :teamId AND m.status IN ('PENDING', 'CONFIRMED', 'DISPUTED')
-      GROUP BY g.scorer_name
+      GROUP BY g.player_email, g.scorer_name
       ORDER BY goals DESC, name ASC`,
     { teamId },
   );
