@@ -18,57 +18,70 @@ type ConfirmedMatch = {
 
 type Team = { id: number; name: string; shortCode: string };
 
-export function generateRoundRobin(teamIds: number[], startingAt = Date.now(), kickoffGapMs = 1000 * 60 * 60 * 24 * 7): Fixture[] {
+export function generateRoundRobin(teamIds: number[], startingAt = Date.now(), kickoffGapMs = 1000 * 60 * 60 * 24): Fixture[] {
   const uniqueIds = teamIds.filter((id, index) => teamIds.indexOf(id) === index);
   if (uniqueIds.length < 2) throw new Error("At least two teams are required to create a schedule.");
 
   const participants: Array<number | null> = [...uniqueIds];
   if (participants.length % 2 === 1) participants.push(null);
-  const rounds = participants.length - 1;
+  const singleLegRounds = participants.length - 1;
   const fixtures: Fixture[] = [];
   const rotating = [...participants];
   const half = rotating.length / 2;
 
-  for (let round = 0; round < rounds; round += 1) {
+  for (let round = 0; round < singleLegRounds; round += 1) {
     const matchday = round + 1;
+    const roundFixtures: Fixture[] = [];
     for (let index = 0; index < half; index += 1) {
       const left = rotating[index];
       const right = rotating[rotating.length - 1 - index];
       if (left === null || right === null) continue;
       const flipHome = (round + index) % 2 === 1;
-      fixtures.push({
+      roundFixtures.push({
         matchday,
         homeTeamId: flipHome ? right : left,
         awayTeamId: flipHome ? left : right,
         kickoffAt: startingAt + round * kickoffGapMs + index * 1000 * 60 * 90,
       });
     }
+    fixtures.push(...roundFixtures);
     rotating.splice(1, 0, rotating.pop() as number | null);
   }
+
+  const secondLeg = fixtures.map((fixture) => ({
+    ...fixture,
+    matchday: fixture.matchday + singleLegRounds,
+    homeTeamId: fixture.awayTeamId,
+    awayTeamId: fixture.homeTeamId,
+    kickoffAt: fixture.kickoffAt + singleLegRounds * kickoffGapMs,
+  }));
+  fixtures.push(...secondLeg);
 
   assertScheduleIsCompatible(uniqueIds, fixtures);
   return fixtures;
 }
 
 export function assertScheduleIsCompatible(teamIds: number[], fixtures: Fixture[]) {
-  const expectedMatches = (teamIds.length * (teamIds.length - 1)) / 2;
+  const expectedMatches = teamIds.length * (teamIds.length - 1);
   if (fixtures.length !== expectedMatches) {
     throw new Error(`Schedule generated ${fixtures.length} matches; expected ${expectedMatches}.`);
   }
 
-  const pairKeys = new Set<string>();
+  const directedPairKeys = new Set<string>();
   const teamDays = new Set<string>();
   for (const fixture of fixtures) {
     if (fixture.homeTeamId === fixture.awayTeamId) throw new Error("A team cannot play itself.");
-    const pairKey = [fixture.homeTeamId, fixture.awayTeamId].sort((a, b) => a - b).join(":");
-    if (pairKeys.has(pairKey)) throw new Error(`Duplicate pairing detected for ${pairKey}.`);
-    pairKeys.add(pairKey);
+    const directedKey = `${fixture.homeTeamId}:${fixture.awayTeamId}`;
+    if (directedPairKeys.has(directedKey)) throw new Error(`Duplicate home/away fixture detected for ${directedKey}.`);
+    directedPairKeys.add(directedKey);
     for (const teamId of [fixture.homeTeamId, fixture.awayTeamId]) {
       const dayKey = `${fixture.matchday}:${teamId}`;
       if (teamDays.has(dayKey)) throw new Error(`Team ${teamId} has more than one match on matchday ${fixture.matchday}.`);
       teamDays.add(dayKey);
     }
   }
+  const expectedDirectedPairCount = teamIds.length * (teamIds.length - 1);
+  if (directedPairKeys.size !== expectedDirectedPairCount) throw new Error("Every ordered home/away pairing must appear exactly once.");
 }
 
 function headToHeadPoints(teamId: number, opponentId: number, matches: ConfirmedMatch[]) {

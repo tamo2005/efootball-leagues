@@ -18,9 +18,36 @@ const connection = await mysql.createConnection({
   ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
 });
 
+async function hasColumn(tableName: string, columnName: string) {
+  const [rows] = await connection.query(
+    `SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+    [tableName, columnName],
+  );
+  return Number((rows as Array<{ count: number }>)[0]?.count || 0) > 0;
+}
+
+async function addColumn(tableName: string, columnName: string, definition: string) {
+  if (!(await hasColumn(tableName, columnName))) {
+    await connection.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`);
+  }
+}
+
 try {
   await connection.query(schema);
-  console.log("Database schema applied successfully.");
+
+  await addColumn("teams", "status", "ENUM('PENDING', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'APPROVED'");
+  await addColumn("teams", "created_by_email", "VARCHAR(320) NULL");
+  await addColumn("teams", "approved_by_email", "VARCHAR(320) NULL");
+  await addColumn("teams", "approved_at", "BIGINT NULL");
+  await connection.query("ALTER TABLE teams MODIFY COLUMN status ENUM('PENDING', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'APPROVED'");
+
+  await addColumn("matches", "original_kickoff_at", "BIGINT NULL");
+  await addColumn("matches", "rescheduled_at", "BIGINT NULL");
+  await addColumn("matches", "reschedule_reason", "VARCHAR(255) NULL");
+  await addColumn("matches", "rescheduled_by_email", "VARCHAR(320) NULL");
+  await connection.query("ALTER TABLE matches MODIFY COLUMN status ENUM('SCHEDULED', 'PENDING', 'CONFIRMED', 'POSTPONED', 'CANCELLED') NOT NULL DEFAULT 'SCHEDULED'");
+
+  console.log("Database schema and compatibility migrations applied successfully.");
 } finally {
   await connection.end();
 }

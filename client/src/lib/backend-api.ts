@@ -40,6 +40,13 @@ export function backendLogin(email: string, password: string) {
   });
 }
 
+export function backendRegister(email: string, password: string, displayName: string, teamName: string, shortCode: string) {
+  return request<{ user: BackendUser; team: { id: number; name: string; shortCode: string; status: string } }>("/api/register", {
+    method: "POST",
+    body: JSON.stringify({ email, password, displayName, teamName, shortCode }),
+  });
+}
+
 export function backendLogout() {
   return request<{ ok: true }>("/api/logout", { method: "POST" });
 }
@@ -58,7 +65,7 @@ export function toLocalUser(user: BackendUser) {
 
 export type BackendDashboard = {
   season: { id: number; name: string; status: string; matchday_count: number; current_matchday: number } | null;
-  teams: Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string }>;
+  teams: Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string; status: string; created_by_email: string | null }>;
   users: Array<{ email: string; display_name: string; role: string; status: string; team_id: number | null }>;
   matches: Array<Record<string, unknown>>;
   goals: Array<{ id: number; match_id: number; team_id: number; player_email: string | null; scorer_name: string; minute: number }>;
@@ -79,6 +86,8 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
     shortName: team.short_code,
     manager: team.manager_name,
     accent: team.accent,
+    approvalStatus: team.status as "PENDING" | "APPROVED" | "REJECTED",
+    createdByEmail: team.created_by_email || undefined,
   }));
   const users = snapshot.users.map((user) => ({
     id: user.email,
@@ -93,7 +102,7 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
   for (const goal of snapshot.goals) {
     const matchKey = String(goal.match_id);
     const matchGoals = goalsByMatch.get(matchKey) || [];
-    matchGoals.push({ id: String(goal.id), teamId: String(goal.team_id), playerName: goal.scorer_name, minute: Number(goal.minute) });
+    matchGoals.push({ id: String(goal.id), teamId: String(goal.team_id), playerName: goal.scorer_name, playerEmail: goal.player_email || undefined, minute: Number(goal.minute) });
     goalsByMatch.set(matchKey, matchGoals);
   }
   const matches: Match[] = snapshot.matches.map((match) => ({
@@ -106,11 +115,15 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
     awayScore: match.away_score === null || match.away_score === undefined ? null : Number(match.away_score),
     status: String(match.status) as Match["status"],
     submittedBy: match.submitted_by_email ? String(match.submitted_by_email) : undefined,
+    submittedAt: match.submitted_at ? new Date(Number(match.submitted_at)).toISOString() : undefined,
+    originalKickoffAt: match.original_kickoff_at ? new Date(Number(match.original_kickoff_at)).toISOString() : undefined,
+    rescheduledAt: match.rescheduled_at ? new Date(Number(match.rescheduled_at)).toISOString() : undefined,
+    rescheduleReason: match.reschedule_reason ? String(match.reschedule_reason) : undefined,
     goals: goalsByMatch.get(String(match.id)) || [],
   }));
   return {
     ...current,
-    league: snapshot.season ? { ...current.league, name: snapshot.season.name, season: snapshot.season.name, status: snapshot.season.status === "ACTIVE" ? "ACTIVE" : snapshot.season.status === "COMPLETED" ? "COMPLETED" : "DRAFT", teamsCount: teams.length } : current.league,
+    league: snapshot.season ? { ...current.league, id: String(snapshot.season.id), name: snapshot.season.name, season: snapshot.season.name, status: snapshot.season.status === "ACTIVE" ? "ACTIVE" : snapshot.season.status === "COMPLETED" ? "COMPLETED" : "DRAFT", teamsCount: teams.length } : current.league,
     teams,
     users,
     matches,
@@ -124,7 +137,7 @@ export function backendSubmitResult(matchId: string, homeScore: number, awayScor
     body: JSON.stringify({
       homeScore,
       awayScore,
-      goals: goals.map((goal) => ({ teamId: Number(goal.teamId), scorerName: goal.playerName, minute: goal.minute })),
+      goals: goals.map((goal) => ({ teamId: Number(goal.teamId), playerEmail: goal.playerEmail, scorerName: goal.playerName, minute: goal.minute })),
     }),
   });
 }
@@ -142,5 +155,17 @@ export function backendCreateUser(payload: { email: string; displayName: string;
 }
 
 export function backendGenerateSchedule(seasonId: number) {
-  return request<{ seasonId: number; fixturesCreated: number; matchdays: number }>(`/api/admin/seasons/${seasonId}/schedule`, { method: "POST" });
+  return request<{ seasonId: number; fixturesCreated: number; matchdays: number; matchesPerDay: number; matchesPerTeam: number }>(`/api/admin/seasons/${seasonId}/schedule`, { method: "POST" });
+}
+
+export function backendApproveTeam(teamId: string, decision: "approve" | "reject") {
+  return request<{ teamId: number; status: string }>(`/api/admin/teams/${teamId}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
+}
+
+export function backendScorerSuggestions(teamId: string) {
+  return request<{ scorers: Array<{ name: string; email: string | null; goals: number }> }>(`/api/teams/${teamId}/scorers`);
+}
+
+export function backendRescheduleMatch(matchId: string, kickoffAt: number, reason: string) {
+  return request<{ matchId: number; status: string; kickoffAt: number; reason: string }>(`/api/matches/${matchId}/reschedule`, { method: "POST", body: JSON.stringify({ kickoffAt, reason }) });
 }

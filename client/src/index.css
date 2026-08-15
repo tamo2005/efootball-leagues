@@ -165,3 +165,76 @@ button:active { transform: scale(.98); }
 @media (max-width: 900px) { .database-grid { grid-template-columns: 1fr; } .database-hero { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 620px) { .auth-shell { padding: 16px; } .auth-card { padding: 28px 22px; } .drawer-stat-list, .player-stat-grid { grid-template-columns: 1fr; } .rule-footer { align-items: flex-start; flex-direction: column; } .topbar-right > .role-badge { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+
+
+/* Qatar 2022-inspired league identity and workflow additions */
+:root {
+  --primary: #C8A84B;
+  --primary-foreground: #1A2B5F;
+  --background: #F5F7FB;
+  --foreground: #162444;
+  --card: #FFFFFF;
+  --card-foreground: #162444;
+  --secondary: #EAF0F8;
+  --secondary-foreground: #5C6B84;
+  --muted: #EEF2F8;
+  --muted-foreground: #71809A;
+  --accent: #C8A84B;
+  --accent-foreground: #1A2B5F;
+  --border: #DDE5F0;
+  --input: #DDE5F0;
+  --ring: #4A90D9;
+}
+html, body { background: #F5F7FB; color: #162444; }
+.league-sidebar { background: linear-gradient(180deg, #68152F 0%, #8B1E3F 55%, #551329 100%); }
+.league-brand strong span, .league-nav button.active, .nav-live, .nav-count, .hero-kicker, .hero-card h2 em, .hero-text-action:hover { color: #C8A84B; }
+.league-nav button.active { background: #C8A84B; color: #1A2B5F; }
+.nav-count { background: rgba(200,168,75,.18); color: #C8A84B; }
+.brand-ball { border-color: #C8A84B; background: radial-gradient(circle at 36% 30%, #F6E7A6 0 9%, transparent 10%), radial-gradient(circle at 64% 72%, #F6E7A6 0 9%, transparent 10%), #8B1E3F; box-shadow: 0 0 0 5px rgba(200,168,75,.14); }
+.brand-ball::before, .brand-ball::after, .brand-ball span { border-color: #F6E7A6; }
+.selector-mark { background: #1A2B5F; color: #C8A84B; }
+.sync-dot, .intro-status > span, .live-indicator > span { background: #C8A84B; }
+.league-topbar { background: rgba(255,255,255,.92); border-bottom-color: #DDE5F0; }
+.hero-card { background: #1A2B5F; }
+.hero-card::before { background: linear-gradient(115deg, rgba(26,43,95,.98) 0%, rgba(26,43,95,.92) 48%, rgba(139,30,63,.52) 100%); }
+.hero-live-dot, .pitch-art, .pitch-player { border-color: #C8A84B; }
+.pitch-art::before, .pitch-art::after { border-color: rgba(200,168,75,.4); }
+.pitch-line { background: rgba(200,168,75,.42); }
+.pitch-circle { border-color: rgba(200,168,75,.62); }
+.pitch-player { background: #1A2B5F; box-shadow: 0 0 0 5px rgba(200,168,75,.12); }
+.intro-actions button:last-child, .hero-actions button:last-child, .drawer-actions button:last-child, .inline-form-actions button:last-child, .view-toolbar > button { background: #C8A84B; color: #1A2B5F; }
+.intro-actions button:last-child:hover, .hero-actions button:last-child:hover, .drawer-actions button:last-child:hover, .inline-form-actions button:last-child:hover, .view-toolbar > button:hover { background: #B19334; }
+.panel, .view-panel, .metric-card, .attention-card { border-color: #DDE5F0; }
+.auth-mode-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 18px 0 20px; padding: 4px; border: 1px solid #DDE5F0; border-radius: 8px; background: #F0F4FA; }
+.auth-mode-toggle button { min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: #71809A; font-size: 11px; font-weight: 800; }
+.auth-mode-toggle button.active { background: #1A2B5F; color: #FFFFFF; box-shadow: 0 2px 8px rgba(26,43,95,.16); }
+.auth-card { border-top: 4px solid #8B1E3F; }
+.auth-form input:focus { border-color: #4A90D9; box-shadow: 0 0 0 3px rgba(74,144,217,.14); }
+.view-toolbar-actions { display: flex; align-items: center; gap: 9px; }
+.section-caption { margin: 7px 0 0; color: #71809A; font-size: 11px; }
+.approval-panel { margin: 20px 0; padding: 20px 22px; border-color: rgba(200,168,75,.55); background: linear-gradient(135deg, #FFFDF6, #FFFFFF); }
+.approval-list { margin-top: 15px; }
+.approval-row { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid #EEF2F8; }
+.approval-row > div:nth-child(2) { min-width: 0; flex: 1; }
+.approval-row strong, .approval-row small { display: block; }
+.approval-row strong { color: #1A2B5F; font-size: 12px; }
+.approval-row small { margin-top: 3px; overflow: hidden; color: #71809A; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.approval-actions { display: flex; gap: 7px; }
+.approval-actions button { min-height: 32px; padding-inline: 11px; font-size: 10px; }
+.team-approval { display: inline-flex; width: fit-content; margin-top: 9px; padding: 4px 8px; border-radius: 999px; font-size: 8px; font-weight: 900; letter-spacing: .1em; }
+.approval-approved { background: #E8F5F3; color: #287A72; }
+.approval-pending { background: #FFF4D5; color: #9A7414; }
+.approval-rejected { background: #FCECEF; color: #A83E55; }
+.row-action-secondary { color: #A83E55; }
+.row-action-secondary:hover { color: #7E2138; }
+.status-chip.postponed { color: #A83E55; }
+.status-chip.postponed > span { background: #C35B70; }
+.match-date span { color: #8B1E3F; }
+.match-actions { flex-wrap: wrap; }
+.rank-number.leader { background: #C8A84B; color: #1A2B5F; }
+.table-updated span, .record-dot { background: #4A90D9; }
+@media (max-width: 760px) {
+  .view-toolbar-actions { align-items: stretch; flex-direction: column; }
+  .approval-row { align-items: flex-start; flex-wrap: wrap; }
+  .approval-actions { width: 100%; margin-left: 38px; }
+}

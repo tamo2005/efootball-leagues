@@ -19,8 +19,13 @@ CREATE TABLE IF NOT EXISTS teams (
   short_code VARCHAR(12) NOT NULL,
   manager_name VARCHAR(120) NOT NULL,
   accent VARCHAR(32) NOT NULL DEFAULT '#9DD36A',
+  status ENUM('PENDING', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'APPROVED',
+  created_by_email VARCHAR(320) NULL,
+  approved_by_email VARCHAR(320) NULL,
+  approved_at BIGINT NULL,
   created_at BIGINT NOT NULL,
-  UNIQUE KEY teams_short_code_uq (short_code)
+  UNIQUE KEY teams_short_code_uq (short_code),
+  INDEX teams_status_idx (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS team_memberships (
@@ -51,7 +56,11 @@ CREATE TABLE IF NOT EXISTS matches (
   home_team_id BIGINT UNSIGNED NOT NULL,
   away_team_id BIGINT UNSIGNED NOT NULL,
   kickoff_at BIGINT NOT NULL,
-  status ENUM('SCHEDULED', 'PENDING', 'CONFIRMED', 'CANCELLED') NOT NULL DEFAULT 'SCHEDULED',
+  status ENUM('SCHEDULED', 'PENDING', 'CONFIRMED', 'POSTPONED', 'CANCELLED') NOT NULL DEFAULT 'SCHEDULED',
+  original_kickoff_at BIGINT NULL,
+  rescheduled_at BIGINT NULL,
+  reschedule_reason VARCHAR(255) NULL,
+  rescheduled_by_email VARCHAR(320) NULL,
   home_score INT NULL,
   away_score INT NULL,
   submitted_by_email VARCHAR(320) NULL,

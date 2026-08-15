@@ -1,4 +1,4 @@
-export type MatchStatus = "SCHEDULED" | "PENDING" | "CONFIRMED" | "DISPUTED";
+export type MatchStatus = "SCHEDULED" | "PENDING" | "CONFIRMED" | "DISPUTED" | "POSTPONED";
 export type UserRole = "admin" | "player";
 export type TiebreakerRule = "points" | "goalDifference" | "goalsFor" | "headToHead" | "wins";
 
@@ -18,6 +18,8 @@ export type Team = {
   shortName: string;
   manager: string;
   accent: string;
+  approvalStatus?: "PENDING" | "APPROVED" | "REJECTED";
+  createdByEmail?: string;
 };
 
 export type UserAccount = {
@@ -34,6 +36,7 @@ export type Goal = {
   id: string;
   teamId: string;
   playerName: string;
+  playerEmail?: string;
   minute: number;
 };
 
@@ -48,6 +51,9 @@ export type Match = {
   status: MatchStatus;
   submittedBy?: string;
   submittedAt?: string;
+  originalKickoffAt?: string;
+  rescheduledAt?: string;
+  rescheduleReason?: string;
   goals: Goal[];
 };
 
