@@ -264,6 +264,20 @@ async function backfillScorerReviewRecords() {
       WHERE r.id IS NULL`,
     { now },
   );
+  const fallbackEntries = Object.entries(MANUAL_FOOTBALLER_NAME_FALLBACKS);
+  const fallbackCase = fallbackEntries.map(([submittedName, suggestedName]) => `WHEN '${submittedName.replace(/'/g, "''")}' THEN '${suggestedName.replace(/'/g, "''")}'`).join(" ");
+  const fallbackNames = fallbackEntries.map(([submittedName]) => `'${submittedName.replace(/'/g, "''")}'`).join(", ");
+  await query(
+    `UPDATE scorer_name_reviews
+        SET suggested_name = CASE LOWER(TRIM(submitted_name)) ${fallbackCase} END,
+            confidence = 0.85,
+            reason = CONCAT('Conservative local alias normalization from “', submitted_name, '”. Admin approval is still required.'),
+            model = 'local-conservative-fallback', error_message = NULL, updated_at = :now
+      WHERE status = 'PENDING'
+        AND LOWER(TRIM(submitted_name)) IN (${fallbackNames})
+        AND COALESCE(suggested_name, '') <> CASE LOWER(TRIM(submitted_name)) ${fallbackCase} END`,
+    { now },
+  );
 }
 
 async function scorerReviewRows(status?: string) {
