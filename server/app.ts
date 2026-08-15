@@ -188,11 +188,14 @@ async function processScorerNameReview(reviewId: number) {
     `Registered team players:\\n${playerContext}`,
     `Previous scorer names for this team: ${previousContext}`,
   ].join("\\n\\n");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
   try {
     const modelResponse = await fetch(HUGGING_FACE_CHAT_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "You are a careful name-normalization assistant. Return valid JSON only." }, { role: "user", content: prompt }], temperature: 0, max_tokens: 220 }),
+      signal: controller.signal,
     });
     const payload = await modelResponse.json().catch(() => null);
     if (!modelResponse.ok) throw new Error(`Hugging Face returned HTTP ${modelResponse.status}.`);
@@ -207,18 +210,20 @@ async function processScorerNameReview(reviewId: number) {
     );
     return { reviewId, status: "PENDING" as const };
   } catch (error) {
+    const message = error instanceof Error && error.name === "AbortError" ? "Hugging Face analysis timed out; retry this name." : error instanceof Error ? error.message : "Hugging Face name review failed.";
     await query(
       `UPDATE scorer_name_reviews SET status = 'FAILED', model = :model, error_message = :message, updated_at = :now WHERE id = :reviewId`,
-      { reviewId, model: config.model, message: clipText(error instanceof Error ? error.message : "Hugging Face name review failed.", 255), now: Date.now() },
+      { reviewId, model: config.model, message: clipText(message, 255), now: Date.now() },
     );
     return { reviewId, status: "FAILED" as const };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 async function processScorerNameReviews(reviewIds: number[]) {
-  const results: Array<{ reviewId: number; status: string }> = [];
-  for (const reviewId of reviewIds.slice(0, 100)) results.push(await processScorerNameReview(reviewId));
-  return results;
+  const ids = reviewIds.slice(0, 3);
+  return Promise.all(ids.map((reviewId) => processScorerNameReview(reviewId)));
 }
 
 async function backfillScorerReviewRecords() {
@@ -559,12 +564,19 @@ app.post("/api/admin/scorer-reviews/analyze", asyncRoute(async (request, respons
   const user = requireAdmin(request, response);
   if (!user) return;
   await backfillScorerReviewRecords();
-  const rows = await query<Array<{ id: number }>>(
-    `SELECT id FROM scorer_name_reviews
-      WHERE status IN ('PENDING', 'FAILED')
-      ORDER BY CASE WHEN suggested_name IS NULL THEN 0 ELSE 1 END, created_at ASC
-      LIMIT 100`,
-  );
+  const requestedIds = Array.isArray(request.body?.reviewIds)
+    ? request.body.reviewIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isInteger(value) && value > 0).slice(0, 3)
+    : [];
+  const rows = requestedIds.length
+    ? await query<Array<{ id: number }>>(
+        `SELECT id FROM scorer_name_reviews WHERE id IN (${requestedIds.join(",")}) AND status IN ('PENDING', 'FAILED') ORDER BY id`,
+      )
+    : await query<Array<{ id: number }>>(
+        `SELECT id FROM scorer_name_reviews
+          WHERE status IN ('PENDING', 'FAILED')
+          ORDER BY CASE WHEN suggested_name IS NULL THEN 0 ELSE 1 END, created_at ASC
+          LIMIT 3`,
+      );
   const results = await processScorerNameReviews(rows.map((row) => Number(row.id)));
   response.json({ analyzed: results.filter((item) => item.status === "PENDING").length, failed: results.filter((item) => item.status === "FAILED").length, reviews: await scorerReviewRows() });
 }));

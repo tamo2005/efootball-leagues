@@ -276,7 +276,7 @@ function TeamPerformancePanel({ performance }: { performance: TeamPerformance[] 
 
 function ScorerReviewPanel({ reviews, onAnalyze, onApprove, onReject, busy }: { reviews: BackendScorerReview[]; onAnalyze: () => void; onApprove: (reviewId: number) => void; onReject: (reviewId: number) => void; busy: boolean }) {
   const actionable = reviews.filter((review) => review.status === "PENDING" || review.status === "FAILED");
-  return <section className="panel scorer-review-panel"><div className="panel-header"><div><p className="eyebrow">AI NAME REVIEW</p><h2>{actionable.length ? `${actionable.length} names need your decision` : "Scorer names are clear"}</h2><p className="section-caption">Hugging Face only suggests a correction. Nothing becomes official until you approve it.</p></div><Button onClick={onAnalyze} disabled={busy || !reviews.some((review) => review.status === "PENDING" || review.status === "FAILED")}><Sparkles size={15} /> {busy ? "Analyzing…" : "Analyze pending names"}</Button></div>{!reviews.length ? <div className="scorer-review-empty"><Sparkles size={22} /><strong>No scorer names are waiting.</strong><span>New submitted goals will appear here for AI-assisted review.</span></div> : <div className="scorer-review-list">{reviews.slice(0, 50).map((review) => { const confidence = review.confidence === null ? null : Math.round(review.confidence * 100); const canDecide = review.status === "PENDING" && Boolean(review.suggested_name); return <article className={`scorer-review-row review-${review.status.toLowerCase()}`} key={review.id}><div className="scorer-review-main"><div className="scorer-review-context"><span className="scorer-review-status">{review.status === "FAILED" ? "Analysis failed" : review.status === "PENDING" ? review.suggested_name ? "Awaiting approval" : "Queued for analysis" : review.status}</span><small>{review.team_name} · {review.home_team_name} vs {review.away_team_name} · Matchday {review.matchday}</small></div><div className="scorer-name-comparison"><div><small>Submitted name</small><strong>{review.submitted_name}</strong></div><ArrowRight size={15} /><div><small>Suggested full name</small><strong>{review.suggested_name || "Waiting for Hugging Face analysis"}</strong></div></div><p className="scorer-review-reason">{review.error_message || review.reason || "The AI suggestion will appear after analysis."}{confidence !== null && <span className="scorer-confidence">{confidence}% confidence</span>}</p></div>{canDecide && <div className="scorer-review-actions"><Button onClick={() => onApprove(review.id)}><Check size={14} /> Approve</Button><Button variant="outline" onClick={() => onReject(review.id)}><X size={14} /> Reject</Button></div>}</article>; })}</div>}</section>;
+  return <section className="panel scorer-review-panel"><div className="panel-header"><div><p className="eyebrow">AI NAME REVIEW</p><h2>{actionable.length ? `${actionable.length} names need your decision` : "Scorer names are clear"}</h2><p className="section-caption">Hugging Face only suggests a correction. Nothing becomes official until you approve it.</p></div><Button onClick={onAnalyze} disabled={busy || !reviews.some((review) => review.status === "FAILED" || (review.status === "PENDING" && !review.suggested_name))}><Sparkles size={15} /> {busy ? "Analyzing…" : "Analyze pending names"}</Button></div>{!reviews.length ? <div className="scorer-review-empty"><Sparkles size={22} /><strong>No scorer names are waiting.</strong><span>New submitted goals will appear here for AI-assisted review.</span></div> : <div className="scorer-review-list">{reviews.slice(0, 50).map((review) => { const confidence = review.confidence === null ? null : Math.round(review.confidence * 100); const canDecide = review.status === "PENDING" && Boolean(review.suggested_name); return <article className={`scorer-review-row review-${review.status.toLowerCase()}`} key={review.id}><div className="scorer-review-main"><div className="scorer-review-context"><span className="scorer-review-status">{review.status === "FAILED" ? "Analysis failed" : review.status === "PENDING" ? review.suggested_name ? "Awaiting approval" : "Queued for analysis" : review.status}</span><small>{review.team_name} · {review.home_team_name} vs {review.away_team_name} · Matchday {review.matchday}</small></div><div className="scorer-name-comparison"><div><small>Submitted name</small><strong>{review.submitted_name}</strong></div><ArrowRight size={15} /><div><small>Suggested full name</small><strong>{review.suggested_name || "Waiting for Hugging Face analysis"}</strong></div></div><p className="scorer-review-reason">{review.error_message || review.reason || "The AI suggestion will appear after analysis."}{confidence !== null && <span className="scorer-confidence">{confidence}% confidence</span>}</p></div>{canDecide && <div className="scorer-review-actions"><Button onClick={() => onApprove(review.id)}><Check size={14} /> Approve</Button><Button variant="outline" onClick={() => onReject(review.id)}><X size={14} /> Reject</Button></div>}</article>; })}</div>}</section>;
 }
 
 function DatabasePanel({ database, user, scorerReviews, onAnalyzeScorerReviews, onApproveScorerReview, onRejectScorerReview, scorerReviewBusy }: { database: LeagueDatabase; user: UserAccount; scorerReviews: BackendScorerReview[]; onAnalyzeScorerReviews: () => void; onApproveScorerReview: (reviewId: number) => void; onRejectScorerReview: (reviewId: number) => void; scorerReviewBusy: boolean }) {
@@ -497,13 +497,30 @@ export default function Home() {
 
   async function analyzeScorerReviews() {
     if (!isAdmin || !useBackend) return;
+    const queuedIds = scorerReviews.filter((review) => review.status === "FAILED" || (review.status === "PENDING" && !review.suggested_name)).map((review) => review.id);
+    if (!queuedIds.length) {
+      toast("No queued scorer names", { description: "Suggestions already shown here are waiting for your approval." });
+      return;
+    }
     setScorerReviewBusy(true);
+    let analyzed = 0;
+    let failed = 0;
+    const requestErrors: string[] = [];
     try {
-      const result = await backendAnalyzeScorerReviews();
-      setScorerReviews(result.reviews || []);
-      toast.success("Scorer names analyzed", { description: `${result.analyzed} suggestion${result.analyzed === 1 ? "" : "s"} ready for your approval${result.failed ? ` · ${result.failed} failed` : ""}.` });
+      for (let offset = 0; offset < queuedIds.length; offset += 3) {
+        const result = await backendAnalyzeScorerReviews(queuedIds.slice(offset, offset + 3));
+        analyzed += result.analyzed;
+        failed += result.failed;
+        setScorerReviews(result.reviews || []);
+      }
+      if (failed) {
+        toast.warning("Scorer analysis partly completed", { description: `${analyzed} suggestion${analyzed === 1 ? "" : "s"} ready for approval · ${failed} name${failed === 1 ? "" : "s"} can be retried.` });
+      } else {
+        toast.success("Scorer names analyzed", { description: `${analyzed} suggestion${analyzed === 1 ? "" : "s"} ready for your approval.` });
+      }
     } catch (error) {
-      toast.error("AI name review failed", { description: error instanceof Error ? error.message : "Try again shortly." });
+      requestErrors.push(error instanceof Error ? error.message : "Try again shortly.");
+      toast.error("AI name review partly failed", { description: `${analyzed} names completed. ${requestErrors[0]}` });
     } finally {
       setScorerReviewBusy(false);
     }

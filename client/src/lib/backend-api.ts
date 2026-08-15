@@ -218,8 +218,8 @@ export function backendScorerSuggestions(teamId: string) {
   return request<{ scorers: Array<{ name: string; email: string | null; goals: number }> }>(`/api/teams/${teamId}/scorers`);
 }
 
-export function backendAnalyzeScorerReviews() {
-  return request<{ analyzed: number; failed: number; reviews: BackendScorerReview[] }>("/api/admin/scorer-reviews/analyze", { method: "POST", body: JSON.stringify({}) });
+export function backendAnalyzeScorerReviews(reviewIds?: number[]) {
+  return request<{ analyzed: number; failed: number; reviews: BackendScorerReview[] }>("/api/admin/scorer-reviews/analyze", { method: "POST", body: JSON.stringify(reviewIds?.length ? { reviewIds } : {}) });
 }
 
 export function backendApproveScorerReview(reviewId: number, approvedName?: string) {
