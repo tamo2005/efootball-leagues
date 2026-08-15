@@ -55,6 +55,13 @@ function duplicateTeamError(error: unknown) {
 
 const HUGGING_FACE_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
 const DEFAULT_HUGGING_FACE_MODEL = "Qwen/Qwen3-4B-Instruct-2507";
+const MANUAL_FOOTBALLER_NAME_FALLBACKS: Record<string, string> = {
+  "gulit": "Ruud Gullit",
+  "del piero": "Alessandro Del Piero",
+  "van basten": "Marco van Basten",
+  "luis suarez": "Luis Suárez",
+  "zlatan ibrahimović": "Zlatan Ibrahimović",
+};
 
 type ScorerReviewModelResult = {
   suggestedFullName: string;
@@ -198,6 +205,25 @@ async function processScorerNameReview(reviewId: number) {
       signal: controller.signal,
     });
     const payload = await modelResponse.json().catch(() => null);
+    if (modelResponse.status === 402) {
+      const fallbackName = clipText(MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(review.submitted_name)] || review.submitted_name, 120);
+      await query(
+        `UPDATE scorer_name_reviews
+            SET suggested_name = :suggestedName, confidence = :confidence,
+                reason = :reason, matched_email = NULL, status = 'PENDING',
+                model = :model, error_message = NULL, updated_at = :now
+          WHERE id = :reviewId`,
+        {
+          reviewId,
+          suggestedName: fallbackName,
+          confidence: 0.5,
+          reason: "Hugging Face credits are temporarily unavailable (HTTP 402). The submitted name is retained as a manual-review suggestion; approve it only if it is correct.",
+          model: `${config.model} · manual fallback`,
+          now: Date.now(),
+        },
+      );
+      return { reviewId, status: "PENDING" as const };
+    }
     if (!modelResponse.ok) throw new Error(`Hugging Face returned HTTP ${modelResponse.status}.`);
     const result = parseScorerReview(modelContent(payload), review.submitted_name, knownPlayers.map((player) => ({ email: player.email, displayName: player.display_name })));
     await query(
