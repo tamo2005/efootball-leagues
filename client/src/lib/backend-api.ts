@@ -141,7 +141,7 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
   const matches: Match[] = snapshot.matches.map((match) => ({
     id: String(match.id),
     matchday: Number(match.matchday),
-    date: match.kickoff_at ? matchDateKey(Number(match.kickoff_at)) : "",
+    date: typeof match.match_date === "string" && match.match_date ? match.match_date : match.kickoff_at ? matchDateKey(Number(match.kickoff_at)) : "",
     kickoffAt: match.kickoff_at ? new Date(Number(match.kickoff_at)).toISOString() : undefined,
     homeTeamId: String(match.home_team_id),
     awayTeamId: String(match.away_team_id),

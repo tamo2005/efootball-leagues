@@ -25,15 +25,32 @@ function leagueDateKey(timestamp = Date.now()) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-function formatLeagueKickoff(timestamp: number) {
+function formatLeagueDateLabel(dateKey: string) {
   return new Intl.DateTimeFormat("en-IN", {
     timeZone: LEAGUE_TIME_ZONE,
-    weekday: "short",
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(new Date(`${dateKey}T12:00:00Z`));
+}
+
+function attachMatchdayDates<T extends Record<string, unknown>>(matches: T[]) {
+  const anchors = new Map<number, number>();
+  for (const match of matches) {
+    const matchday = Number(match.matchday);
+    const hasOriginal = match.original_kickoff_at !== null && match.original_kickoff_at !== undefined;
+    const candidate = Number(match.kickoff_at);
+    if (hasOriginal || !Number.isInteger(matchday) || !Number.isFinite(candidate)) continue;
+    const current = anchors.get(matchday);
+    if (current === undefined || candidate < current) anchors.set(matchday, candidate);
+  }
+  return matches.map((match) => {
+    const matchday = Number(match.matchday);
+    const hasOriginal = match.original_kickoff_at !== null && match.original_kickoff_at !== undefined;
+    const kickoff = Number(match.kickoff_at);
+    const candidate = hasOriginal ? kickoff : anchors.get(matchday) ?? kickoff;
+    return { ...match, match_date: Number.isFinite(candidate) ? leagueDateKey(candidate) : "" };
+  });
 }
 
 function cookieValue(request: Request, name: string) {
@@ -546,7 +563,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
   );
   // Fixture visibility is league-wide. Players may browse every fixture; submission and confirmation permissions remain enforced separately.
   const params: Record<string, unknown> = { seasonId: season?.id ?? 0 };
-  const matches = season ? await query<Array<Record<string, unknown>>>(
+  const rawMatches = season ? await query<Array<Record<string, unknown>>>(
     `SELECT m.id, m.matchday, m.kickoff_at, m.original_kickoff_at, m.rescheduled_at, m.reschedule_reason,
             m.status, m.home_score, m.away_score,
             h.id AS home_team_id, h.name AS home_team_name, h.short_code AS home_short_code,
@@ -556,6 +573,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       WHERE m.season_id = :seasonId
       ORDER BY m.matchday, m.kickoff_at`, params,
   ) : [];
+  const matches = attachMatchdayDates(rawMatches);
   const matchIds = matches.map((match) => Number(match.id));
   const goals = matchIds.length ? await query<Array<Record<string, unknown>>>(
     `SELECT g.id, g.match_id, g.team_id, g.player_email, g.scorer_name, g.minute
@@ -1082,7 +1100,7 @@ app.get("/api/seasons/:seasonId/matches", asyncRoute(async (request, response) =
   const teamFilter = user.role === "player" && user.teamId ? "AND (m.home_team_id = :teamId OR m.away_team_id = :teamId)" : "";
   if (user.role === "player" && user.teamId) params.teamId = user.teamId;
   const matches = await query<Array<Record<string, unknown>>>(
-    `SELECT m.id, m.season_id, m.matchday, m.kickoff_at, m.status, m.home_score, m.away_score,
+    `SELECT m.id, m.season_id, m.matchday, m.kickoff_at, m.original_kickoff_at, m.status, m.home_score, m.away_score,
             h.id AS home_team_id, h.name AS home_team_name, h.short_code AS home_short_code,
             a.id AS away_team_id, a.name AS away_team_name, a.short_code AS away_short_code,
             m.submitted_by_email, m.confirmed_by_email
@@ -1091,7 +1109,7 @@ app.get("/api/seasons/:seasonId/matches", asyncRoute(async (request, response) =
       ORDER BY m.matchday, m.kickoff_at`,
     params,
   );
-  response.json({ matches });
+  response.json({ matches: attachMatchdayDates(matches) });
 }));
 
 app.get("/api/seasons/:seasonId/standings", asyncRoute(async (request, response) => {
@@ -1117,8 +1135,13 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     response.status(400).json({ error: "INVALID_SCORE", message: "Scores must be whole numbers from 0 to 99." });
     return;
   }
-  const matchRows = await query<Array<{ home_team_id: number; away_team_id: number; kickoff_at: number; status: string; submitted_by_email: string | null }>>(
-    "SELECT home_team_id, away_team_id, kickoff_at, status, submitted_by_email FROM matches WHERE id = :matchId LIMIT 1",
+  const matchRows = await query<Array<{ home_team_id: number; away_team_id: number; season_id: number; matchday: number; kickoff_at: number; matchday_anchor_at: number | null; status: string; submitted_by_email: string | null }>>(
+    `SELECT m.home_team_id, m.away_team_id, m.season_id, m.matchday, m.kickoff_at,
+            CASE WHEN m.original_kickoff_at IS NOT NULL THEN m.kickoff_at
+              ELSE (SELECT MIN(m2.kickoff_at) FROM matches m2 WHERE m2.season_id = m.season_id AND m2.matchday = m.matchday AND m2.original_kickoff_at IS NULL)
+            END AS matchday_anchor_at,
+            m.status, m.submitted_by_email
+       FROM matches m WHERE m.id = :matchId LIMIT 1`,
     { matchId },
   );
   const match = matchRows[0];
@@ -1131,9 +1154,10 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     return;
   }
   const kickoffAt = Number(match.kickoff_at);
-  const scheduledDate = Number.isFinite(kickoffAt) ? leagueDateKey(kickoffAt) : "";
+  const matchdayAnchorAt = Number(match.matchday_anchor_at ?? kickoffAt);
+  const scheduledDate = Number.isFinite(matchdayAnchorAt) ? leagueDateKey(matchdayAnchorAt) : "";
   if (!scheduledDate || leagueDateKey() < scheduledDate) {
-    response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${Number.isFinite(kickoffAt) ? formatLeagueKickoff(kickoffAt) : "its scheduled date"}. Results can be entered from the scheduled league date.` });
+    response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${scheduledDate ? formatLeagueDateLabel(scheduledDate) : "its scheduled date"}. Results can be entered from the scheduled league date.` });
     return;
   }
   if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {
