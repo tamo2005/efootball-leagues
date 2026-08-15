@@ -171,6 +171,10 @@ export function backendStartTournament(seasonId: number) {
   return request<{ seasonId: number; fixturesCreated: number; matchdays: number; matchesPerDay: number; matchesPerTeam: number; status: string }>(`/api/admin/seasons/${seasonId}/start`, { method: "POST" });
 }
 
+export function backendDeleteTeam(teamId: string) {
+  return request<{ teamId: number; deleted: true }>(`/api/admin/teams/${teamId}`, { method: "DELETE" });
+}
+
 export function backendApproveTeam(teamId: string, decision: "approve" | "reject") {
   return request<{ teamId: number; status: string }>(`/api/admin/teams/${teamId}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
 }

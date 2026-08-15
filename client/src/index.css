@@ -238,3 +238,7 @@ html, body { background: #F5F7FB; color: #162444; }
   .approval-row { align-items: flex-start; flex-wrap: wrap; }
   .approval-actions { width: 100%; margin-left: 38px; }
 }
+
+.danger-icon { color: #b35363; }
+.danger-icon:hover { background: #fff0f2; color: #8b1e3f; }
+.team-card-rank-spacer { width: 29px; height: 29px; }

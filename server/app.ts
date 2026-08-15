@@ -253,6 +253,38 @@ app.post("/api/admin/teams", asyncRoute(async (request, response) => {
   response.status(201).json({ id: (result as unknown as { insertId: number }).insertId, status: "APPROVED" });
 }));
 
+app.delete("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const teamId = Number(request.params.teamId);
+  if (!Number.isInteger(teamId) || teamId <= 0) {
+    response.status(400).json({ error: "INVALID_TEAM_ID", message: "That team identifier is invalid." });
+    return;
+  }
+  const teamRows = await query<Array<{ id: number; name: string; status: string }>>("SELECT id, name, status FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+  const team = teamRows[0];
+  if (!team) {
+    response.status(404).json({ error: "TEAM_NOT_FOUND", message: "That team no longer exists." });
+    return;
+  }
+  const fixtureRows = await query<Array<{ count: number }>>("SELECT COUNT(*) AS count FROM matches WHERE home_team_id = :teamId OR away_team_id = :teamId", { teamId });
+  if (Number(fixtureRows[0]?.count || 0) > 0) {
+    response.status(409).json({ error: "TEAM_HAS_FIXTURES", message: "Teams with fixtures cannot be deleted. Finish or archive the tournament first." });
+    return;
+  }
+  const now = Date.now();
+  await withTransaction(async (connection) => {
+    await connection.execute("DELETE FROM team_memberships WHERE team_id = ?", [teamId]);
+    await connection.execute("DELETE FROM teams WHERE id = ?", [teamId]);
+    await connection.execute(
+      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+       VALUES (?, 'TEAM_DELETED', 'team', ?, JSON_OBJECT('name', ?, 'status', ?), ?)`,
+      [user.email, String(teamId), team.name, team.status, now],
+    );
+  });
+  response.json({ teamId, deleted: true });
+}));
+
 app.post("/api/admin/teams/:teamId/decision", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
   if (!user) return;
