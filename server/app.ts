@@ -7,6 +7,17 @@ import { assertScheduleIsCompatible, calculateStandings, generateRoundRobin } fr
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+class ApiError extends Error {
+  statusCode: number;
+  code: string;
+
+  constructor(statusCode: number, code: string, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+}
+
 const asyncRoute = (handler: (request: Request, response: Response) => Promise<void>) => (request: Request, response: Response, next: NextFunction) => {
   handler(request, response).catch(next);
 };
@@ -246,20 +257,37 @@ app.post("/api/admin/teams/:teamId/decision", asyncRoute(async (request, respons
   const user = requireAdmin(request, response);
   if (!user) return;
   const teamId = Number(request.params.teamId);
-  const decision = request.body?.decision === "reject" ? "REJECTED" : "APPROVED";
-  const now = Date.now();
+  if (!Number.isInteger(teamId) || teamId <= 0) {
+    response.status(400).json({ error: "INVALID_TEAM_ID", message: "That team identifier is invalid." });
+    return;
+  }
+  const decision = request.body?.decision === "reject" ? "REJECTED" : request.body?.decision === "approve" ? "APPROVED" : null;
+  if (!decision) {
+    response.status(400).json({ error: "INVALID_TEAM_DECISION", message: "Choose approve or reject before continuing." });
+    return;
+  }
   const existing = await query<Array<{ id: number; status: string }>>("SELECT id, status FROM teams WHERE id = :teamId LIMIT 1", { teamId });
   if (!existing[0]) {
     response.status(404).json({ error: "TEAM_NOT_FOUND", message: "That team no longer exists." });
     return;
   }
-  await query("UPDATE teams SET status = :status, approved_by_email = :approvedBy, approved_at = :approvedAt WHERE id = :teamId", { status: decision, approvedBy: user.email, approvedAt: now, teamId });
-  await query(
-    `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
-     VALUES (:actor, :eventType, 'team', :entityId, JSON_OBJECT('decision', :decision), :createdAt)`,
-    { actor: user.email, eventType: decision === "APPROVED" ? "TEAM_APPROVED" : "TEAM_REJECTED", entityId: String(teamId), decision, createdAt: now },
-  );
-  response.json({ teamId, status: decision });
+  if (existing[0].status === decision) {
+    response.json({ teamId, status: decision, alreadyApplied: true });
+    return;
+  }
+  const now = Date.now();
+  await withTransaction(async (connection) => {
+    await connection.execute(
+      "UPDATE teams SET status = ?, approved_by_email = ?, approved_at = ? WHERE id = ?",
+      [decision, user.email, now, teamId],
+    );
+    await connection.execute(
+      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+       VALUES (?, ?, 'team', ?, JSON_OBJECT('decision', ?), ?)`,
+      [user.email, decision === "APPROVED" ? "TEAM_APPROVED" : "TEAM_REJECTED", String(teamId), decision, now],
+    );
+  });
+  response.json({ teamId, status: decision, alreadyApplied: false });
 }));
 
 app.post("/api/admin/users", asyncRoute(async (request, response) => {
@@ -313,27 +341,19 @@ app.post("/api/admin/seasons", asyncRoute(async (request, response) => {
   response.status(201).json({ id: (result as unknown as { insertId: number }).insertId });
 }));
 
-app.post("/api/admin/seasons/:seasonId/schedule", asyncRoute(async (request, response) => {
-  const user = requireAdmin(request, response);
-  if (!user) return;
-  const seasonId = Number(request.params.seasonId);
+async function createSeasonSchedule(seasonId: number, actorEmail: string) {
+  if (!Number.isInteger(seasonId) || seasonId <= 0) throw new ApiError(400, "INVALID_SEASON_ID", "That season identifier is invalid.");
   const seasonRows = await query<Array<{ id: number; name: string }>>("SELECT id, name FROM seasons WHERE id = :seasonId LIMIT 1", { seasonId });
-  if (!seasonRows[0]) {
-    response.status(404).json({ error: "SEASON_NOT_FOUND", message: "Create the league season before generating its schedule." });
-    return;
-  }
+  if (!seasonRows[0]) throw new ApiError(404, "SEASON_NOT_FOUND", "Create the league season before starting the tournament.");
   const teamRows = await query<Array<{ id: number }>>("SELECT id FROM teams WHERE status = 'APPROVED' ORDER BY id");
   const teamIds = teamRows.map((team) => Number(team.id));
-  if (teamIds.length < 2) {
-    response.status(400).json({ error: "NOT_ENOUGH_APPROVED_TEAMS", message: "At least two approved teams are required before a schedule can be generated." });
-    return;
-  }
+  if (teamIds.length < 2) throw new ApiError(400, "NOT_ENOUGH_APPROVED_TEAMS", "Approve at least two teams before starting the tournament.");
   const fixtures = generateRoundRobin(teamIds);
   const now = Date.now();
   await withTransaction(async (connection) => {
     const [existing] = await connection.query("SELECT COUNT(*) AS count FROM matches WHERE season_id = ?", [seasonId]);
     const existingRows = existing as Array<{ count: number }>;
-    if (Number(existingRows[0]?.count || 0) > 0) throw new Error("This season already has fixtures. Create a new season before generating another schedule.");
+    if (Number(existingRows[0]?.count || 0) > 0) throw new ApiError(409, "SCHEDULE_EXISTS", "This season already has fixtures. Use the existing tournament instead of starting it again.");
     for (const fixture of fixtures) {
       await connection.execute(
         `INSERT INTO matches (season_id, matchday, home_team_id, away_team_id, kickoff_at, status, created_at, updated_at)
@@ -345,11 +365,44 @@ app.post("/api/admin/seasons/:seasonId/schedule", asyncRoute(async (request, res
     await connection.execute(
       `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
        VALUES (?, 'GENERATE_SCHEDULE', 'season', ?, JSON_OBJECT('fixtures', ?), ?)`,
-      [user.email, String(seasonId), fixtures.length, now],
+      [actorEmail, String(seasonId), fixtures.length, now],
     );
   });
   assertScheduleIsCompatible(teamIds, fixtures);
-  response.status(201).json({ seasonId, fixturesCreated: fixtures.length, matchdays: Math.max(...fixtures.map((fixture) => fixture.matchday), 0), matchesPerDay: Math.floor(teamIds.length / 2), matchesPerTeam: teamIds.length - 1 });
+  return { seasonId, fixturesCreated: fixtures.length, matchdays: Math.max(...fixtures.map((fixture) => fixture.matchday), 0), matchesPerDay: Math.floor(teamIds.length / 2), matchesPerTeam: teamIds.length - 1 };
+}
+
+app.post("/api/admin/seasons/:seasonId/schedule", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const result = await createSeasonSchedule(Number(request.params.seasonId), user.email);
+  response.status(201).json(result);
+}));
+
+app.post("/api/admin/seasons/:seasonId/start", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const seasonId = Number(request.params.seasonId);
+  const existing = await query<Array<{ count: number }>>("SELECT COUNT(*) AS count FROM matches WHERE season_id = :seasonId", { seasonId });
+  let result: { seasonId: number; fixturesCreated: number; matchdays: number; matchesPerDay: number; matchesPerTeam: number };
+  if (Number(existing[0]?.count || 0) === 0) {
+    result = await createSeasonSchedule(seasonId, user.email);
+  } else {
+    const seasonRows = await query<Array<{ id: number; status: string; matchday_count: number; current_matchday: number }>>("SELECT id, status, matchday_count, current_matchday FROM seasons WHERE id = :seasonId LIMIT 1", { seasonId });
+    if (!seasonRows[0]) throw new ApiError(404, "SEASON_NOT_FOUND", "That season no longer exists.");
+    const teamRows = await query<Array<{ id: number }>>("SELECT id FROM teams WHERE status = 'APPROVED' ORDER BY id");
+    const now = Date.now();
+    await withTransaction(async (connection) => {
+      await connection.execute("UPDATE seasons SET status = 'ACTIVE', updated_at = ? WHERE id = ?", [now, seasonId]);
+      await connection.execute(
+        `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+         VALUES (?, 'START_TOURNAMENT', 'season', ?, JSON_OBJECT('existingFixtures', ?), ?)`,
+        [user.email, String(seasonId), Number(existing[0]?.count || 0), now],
+      );
+    });
+    result = { seasonId, fixturesCreated: 0, matchdays: Number(seasonRows[0].matchday_count || 0), matchesPerDay: Math.floor(teamRows.length / 2), matchesPerTeam: Math.max(teamRows.length - 1, 0) };
+  }
+  response.json({ ...result, status: "ACTIVE" });
 }));
 
 app.post("/api/matches/:matchId/reschedule", asyncRoute(async (request, response) => {
@@ -434,8 +487,8 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     response.status(400).json({ error: "INVALID_SCORE", message: "Scores must be whole numbers from 0 to 99." });
     return;
   }
-  const matchRows = await query<Array<{ home_team_id: number; away_team_id: number; status: string; submitted_by_email: string | null }>>(
-    "SELECT home_team_id, away_team_id, status, submitted_by_email FROM matches WHERE id = :matchId LIMIT 1",
+  const matchRows = await query<Array<{ home_team_id: number; away_team_id: number; kickoff_at: number; status: string; submitted_by_email: string | null }>>(
+    "SELECT home_team_id, away_team_id, kickoff_at, status, submitted_by_email FROM matches WHERE id = :matchId LIMIT 1",
     { matchId },
   );
   const match = matchRows[0];
@@ -447,8 +500,14 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     response.status(409).json({ error: "MATCH_CONFIRMED", message: "Official results cannot be overwritten." });
     return;
   }
-  if (user.role !== "admin" && user.teamId !== Number(match.home_team_id) && user.teamId !== Number(match.away_team_id)) {
-    response.status(403).json({ error: "TEAM_ACCESS_REQUIRED", message: "Players can only submit results for fixtures involving their team." });
+  const kickoffDate = new Date(Number(match.kickoff_at)).toISOString().slice(0, 10);
+  const todayDate = new Date().toISOString().slice(0, 10);
+  if (todayDate < kickoffDate) {
+    response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${kickoffDate}. Results cannot be entered before the scheduled date.` });
+    return;
+  }
+  if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {
+    response.status(403).json({ error: "HOME_TEAM_REQUIRED", message: "Only the home team can enter the match result. The away team can view the fixture and wait for confirmation." });
     return;
   }
   if (match.submitted_by_email && match.submitted_by_email !== user.email && user.role !== "admin") {
@@ -520,6 +579,10 @@ app.get("/api/stats/players", asyncRoute(async (request, response) => {
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   console.error(error);
+  if (error instanceof ApiError) {
+    response.status(error.statusCode).json({ error: error.code, message: error.message });
+    return;
+  }
   response.status(500).json({ error: "INTERNAL_ERROR", message: error instanceof Error ? error.message : "Unexpected server error." });
 });
 

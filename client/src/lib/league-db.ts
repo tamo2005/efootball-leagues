@@ -266,9 +266,14 @@ export function currentUser(database: LeagueDatabase) {
   return database.users.find((user) => user.id === database.currentUserId && user.active) ?? null;
 }
 
+export function isMatchDateOpen(match: Pick<Match, "date">, now = new Date()) {
+  const todayKey = now.toISOString().slice(0, 10);
+  return match.date <= todayKey;
+}
+
 export function canSubmitMatch(user: UserAccount | null, match: Match) {
-  if (!user || match.status === "CONFIRMED") return false;
-  return user.role === "admin" || user.teamId === match.homeTeamId || user.teamId === match.awayTeamId;
+  if (!user || match.status === "CONFIRMED" || !isMatchDateOpen(match)) return false;
+  return user.role === "admin" || user.teamId === match.homeTeamId;
 }
 
 export function canConfirmMatch(user: UserAccount | null, match: Match) {

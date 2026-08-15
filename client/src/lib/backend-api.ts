@@ -155,7 +155,11 @@ export function backendCreateUser(payload: { email: string; displayName: string;
 }
 
 export function backendGenerateSchedule(seasonId: number) {
-  return request<{ seasonId: number; fixturesCreated: number; matchdays: number; matchesPerDay: number; matchesPerTeam: number }>(`/api/admin/seasons/${seasonId}/schedule`, { method: "POST" });
+  return request<{ seasonId: number; fixturesCreated: number; matchdays: number; matchesPerDay: number; matchesPerTeam: number; status?: string }>(`/api/admin/seasons/${seasonId}/schedule`, { method: "POST" });
+}
+
+export function backendStartTournament(seasonId: number) {
+  return request<{ seasonId: number; fixturesCreated: number; matchdays: number; matchesPerDay: number; matchesPerTeam: number; status: string }>(`/api/admin/seasons/${seasonId}/start`, { method: "POST" });
 }
 
 export function backendApproveTeam(teamId: string, decision: "approve" | "reject") {

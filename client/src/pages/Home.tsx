@@ -41,6 +41,7 @@ import {
   DEFAULT_TIEBREAKERS,
   canConfirmMatch,
   canSubmitMatch,
+  isMatchDateOpen,
   countConfirmed,
   countPending,
   formatMatchDate,
@@ -63,7 +64,7 @@ import {
   type TiebreakerRule,
   type UserAccount,
 } from "@/lib/league-db";
-import { backendApproveTeam, backendConfirmResult, backendCreateTeam, backendDashboard, backendEnabled, backendGenerateSchedule, backendLogin, backendLogout, backendMe, backendRegister, backendRescheduleMatch, backendScorerSuggestions, backendSubmitResult, mergeBackendDashboard, toLocalUser } from "@/lib/backend-api";
+import { backendApproveTeam, backendConfirmResult, backendCreateTeam, backendDashboard, backendEnabled, backendLogin, backendLogout, backendMe, backendRegister, backendRescheduleMatch, backendScorerSuggestions, backendStartTournament, backendSubmitResult, mergeBackendDashboard, toLocalUser } from "@/lib/backend-api";
 
 type View = "overview" | "fixtures" | "teams" | "table" | "database" | "rules";
 type ResultInput = { id: string; teamId: string; playerName: string; playerEmail?: string; minute: string };
@@ -111,10 +112,13 @@ function FormPill({ value }: { value: "W" | "D" | "L" }) {
   return <span className={`form-pill form-${value.toLowerCase()}`}>{value}</span>;
 }
 
-function MatchRow({ database, match, isAdmin, onResult, onConfirm, onReschedule }: { database: LeagueDatabase; match: Match; isAdmin: boolean; onResult: (id: string) => void; onConfirm: (id: string) => void; onReschedule: RescheduleHandler }) {
+function MatchRow({ database, match, user, isAdmin, onResult, onConfirm, onReschedule }: { database: LeagueDatabase; match: Match; user: UserAccount; isAdmin: boolean; onResult: (id: string) => void; onConfirm: (id: string) => void; onReschedule: RescheduleHandler }) {
   const home = teamById(database.teams, match.homeTeamId);
   const away = teamById(database.teams, match.awayTeamId);
   const canConfirm = isAdmin && match.status === "PENDING";
+  const dateOpen = isMatchDateOpen(match);
+  const canEnter = canSubmitMatch(user, match);
+  const entryHint = !dateOpen ? `Opens ${formatMatchDate(match.date)}` : isAdmin ? "Admin entry enabled" : "Home team enters result";
   return (
     <article className="match-row">
       <div className="match-date"><span>{shortDay(match.date)}</span><strong>{formatMatchDate(match.date)}</strong><small>Matchday {match.matchday}</small></div>
@@ -125,11 +129,11 @@ function MatchRow({ database, match, isAdmin, onResult, onConfirm, onReschedule 
         </div>
         <div className="match-team away"><TeamMark team={away} size="sm" /><span>{away?.name}</span></div>
       </div>
-      <div className="match-meta"><span className={`status-chip ${statusClass(match.status)}`}><span />{statusLabel(match.status)}</span><small>{match.goals.length ? `${match.goals.length} goal${match.goals.length === 1 ? "" : "s"} logged` : "No result yet"}</small></div>
+      <div className="match-meta"><span className={`status-chip ${statusClass(match.status)}`}><span />{statusLabel(match.status)}</span><small>{match.goals.length ? `${match.goals.length} goal${match.goals.length === 1 ? "" : "s"} logged` : entryHint}</small></div>
       <div className="match-actions">
         {canConfirm && <button className="confirm-link" onClick={() => onConfirm(match.id)}><Check size={14} /> Confirm</button>}
         {isAdmin && match.status !== "CONFIRMED" && <button className="row-action row-action-secondary" onClick={() => onReschedule(match.id)}>{match.status === "POSTPONED" ? "Adjust date" : "Postpone"}</button>}
-        <button className="row-action" onClick={() => onResult(match.id)}>{match.status === "SCHEDULED" || match.status === "POSTPONED" ? "Enter result" : "View result"}<ArrowRight size={14} /></button>
+        {canEnter ? <button className="row-action" onClick={() => onResult(match.id)}>{match.status === "SCHEDULED" || match.status === "POSTPONED" ? "Enter result" : "View result"}<ArrowRight size={14} /></button> : <span className="match-locked"><Clock3 size={13} />{match.status === "CONFIRMED" ? "Official" : dateOpen ? "Home team only" : "Not open yet"}</span>}
       </div>
     </article>
   );
@@ -376,8 +380,20 @@ export default function Home() {
       return;
     }
     const match = database.matches.find((item) => item.id === id);
-    if (!user || !match || !canSubmitMatch(user, match)) {
-      toast.error("You cannot submit this fixture", { description: "Players can only submit results involving their assigned team." });
+    if (!user || !match) {
+      toast.error("Fixture unavailable", { description: "That fixture is no longer in the live league database." });
+      return;
+    }
+    if (!isMatchDateOpen(match)) {
+      toast("Matchday is not open yet", { description: `This result can be entered on ${formatMatchDate(match.date)} or later.` });
+      return;
+    }
+    if (user.role !== "admin" && user.teamId !== match.homeTeamId) {
+      toast("Home team entry only", { description: "The home team enters the score. The away team can view the fixture and wait for confirmation." });
+      return;
+    }
+    if (!canSubmitMatch(user, match)) {
+      toast.error("Result entry is unavailable", { description: "This fixture may already be official or awaiting review." });
       return;
     }
     setResultMatchId(id);
@@ -392,7 +408,22 @@ export default function Home() {
   async function saveResult(matchId: string, homeScore: number, awayScore: number, goals: Goal[]) {
     if (!user) return;
     const match = database.matches.find((item) => item.id === matchId);
-    if (!match || !canSubmitMatch(user, match)) return;
+    if (!match) {
+      toast.error("Fixture unavailable", { description: "That fixture is no longer in the live league database." });
+      return;
+    }
+    if (!isMatchDateOpen(match)) {
+      toast("Matchday is not open yet", { description: `This result can be entered on ${formatMatchDate(match.date)} or later.` });
+      return;
+    }
+    if (user.role !== "admin" && user.teamId !== match.homeTeamId) {
+      toast("Home team entry only", { description: "Only the home team can submit the initial match data." });
+      return;
+    }
+    if (!canSubmitMatch(user, match)) {
+      toast.error("Result entry is unavailable", { description: "This fixture may already be official or awaiting review." });
+      return;
+    }
     try {
       if (useBackend) {
         await backendSubmitResult(matchId, homeScore, awayScore, goals);
@@ -468,19 +499,24 @@ export default function Home() {
     }
   }
 
-  async function generateSchedule() {
+  async function startTournament() {
     if (!isAdmin) return;
     const seasonId = Number(database.league.id);
+    const approvedTeamCount = database.teams.filter((team) => team.approvalStatus === "APPROVED").length;
     if (!useBackend || !Number.isFinite(seasonId)) {
-      toast.error("Live season required", { description: "Schedule generation is available from the live TiDB league." });
+      toast.error("Live season required", { description: "Start the tournament from the live TiDB league." });
+      return;
+    }
+    if (approvedTeamCount < 2) {
+      toast.error("Approve teams first", { description: "At least two approved teams are required before the tournament can start." });
       return;
     }
     try {
-      const result = await backendGenerateSchedule(seasonId);
+      const result = await backendStartTournament(seasonId);
       await refreshRemoteDashboard();
-      toast.success("Double round-robin schedule generated", { description: `${result.fixturesCreated} fixtures across ${result.matchdays} matchdays · ${result.matchesPerDay} matches per day.` });
+      toast.success("Tournament started", { description: `${result.fixturesCreated ? `${result.fixturesCreated} fixtures created · ` : "Existing fixtures activated · "}${result.matchdays} matchdays · ${result.matchesPerDay} matches per day.` });
     } catch (error) {
-      toast.error("Schedule could not be generated", { description: error instanceof Error ? error.message : "Approve at least two teams first." });
+      toast.error("Tournament could not start", { description: error instanceof Error ? error.message : "Approve teams and try again." });
     }
   }
 
@@ -520,6 +556,8 @@ export default function Home() {
     toast.success("Tie-breakers reset", { description: "The official default order is active again." });
   }
 
+  const approvedTeamCount = database.teams.filter((team) => team.approvalStatus === "APPROVED").length;
+  const tournamentStarted = database.league.status === "ACTIVE" || database.matches.length > 0;
   const currentTitle = activeView === "overview" ? `Good afternoon, ${user?.name.split(" ")[0] ?? "there"}` : activeView === "fixtures" ? "Fixtures & results" : activeView === "teams" ? "Teams & managers" : activeView === "table" ? "Live league table" : activeView === "database" ? "Database & access" : "Rules & tie-breakers";
   const currentDescription = activeView === "overview" ? "Keep the league moving with one clear place for every result, roster, and ranking." : activeView === "fixtures" ? "Every scheduled match, submission, and confirmation in one calm workflow." : activeView === "teams" ? "Manage the clubs and eFootball accounts that power this season." : activeView === "table" ? "Official standings calculated from confirmed match results." : activeView === "database" ? "Manage identity, role permissions, and the records behind this competition." : "Automated rules keep tied teams ordered without manual spreadsheet work.";
 
@@ -555,12 +593,12 @@ export default function Home() {
             <div className="hero-grid"><section className="hero-card"><div className="hero-copy"><span className="hero-kicker"><span className="hero-live-dot" /> Matchday {database.matches[0]?.matchday ?? 1} in progress</span><h2>Keep the league<br /><em>moving forward.</em></h2><p>{pendingCount ? `${pendingCount} result is waiting for confirmation. Keep the official table clean with one quick review.` : "All results are up to date. The next fixture is ready when your players are."}</p><div className="hero-actions"><Button onClick={() => openResult()}>{pendingCount ? "Review pending result" : "Enter next result"} <ArrowRight size={15} /></Button><button className="hero-text-action" onClick={() => setActiveView("fixtures")}>Open match centre <ArrowRight size={14} /></button></div></div><div className="pitch-art" aria-hidden="true"><div className="pitch-line pitch-midline" /><div className="pitch-circle" /><div className="pitch-box pitch-box-top" /><div className="pitch-box pitch-box-bottom" /><span className="pitch-player player-one" /><span className="pitch-player player-two" /><span className="pitch-player player-three" /><span className="pitch-player player-four" /></div></section><aside className="attention-card"><div className="attention-top"><span className="eyebrow">NEEDS YOUR ATTENTION</span><span className="attention-icon"><Bell size={16} /></span></div><strong>{pendingCount ? "One result is waiting" : "No reviews waiting"}</strong><p>{pendingMatch ? `${teamById(database.teams, pendingMatch.homeTeamId)?.name} submitted a ${pendingMatch.homeScore}–${pendingMatch.awayScore} result against ${teamById(database.teams, pendingMatch.awayTeamId)?.name}.` : "Your league is clear. New submissions will appear here."}</p>{pendingMatch && isAdmin ? <button onClick={() => confirmMatch(pendingMatch.id)}>Confirm result <Check size={15} /></button> : <span className="attention-clear"><ShieldCheck size={15} />{pendingMatch ? "Awaiting admin review" : "Everything is up to date"}</span>}</aside></div>
             <div className="metric-grid"><MetricCard label="Confirmed matches" value={`${confirmedCount} / ${database.matches.length}`} note={`${database.matches.length ? Math.round((confirmedCount / database.matches.length) * 100) : 0}% of the season complete`} accent="#9dd36a" icon={Check} /><MetricCard label="Pending confirmation" value={String(pendingCount).padStart(2, "0")} note="Review before the table updates" accent="#f0b35b" icon={Clock3} /><MetricCard label="Teams competing" value={String(database.teams.length).padStart(2, "0")} note="All manager records are assigned" accent="#79b9f2" icon={Users} /><MetricCard label="Database health" value="100%" note="No duplicate or missing records" accent="#bf9cf3" icon={Database} /></div>
             <div className="dashboard-grid"><section className="panel standings-panel"><div className="panel-header"><div><p className="eyebrow">01 / OFFICIAL TABLE</p><h2>Standings</h2></div><button className="panel-link" onClick={() => setActiveView("table")}>Full table <ArrowRight size={14} /></button></div><StandingTable standings={standings} compact /></section><section className="panel activity-panel"><div className="panel-header"><div><p className="eyebrow">02 / LIVE FEED</p><h2>Recent activity</h2></div><Activity size={18} className="panel-icon" /></div><ActivityFeed activities={database.activities} /></section></div>
-            <section className="panel next-fixtures-panel"><div className="panel-header"><div><p className="eyebrow">03 / NEXT UP</p><h2>Fixture desk</h2></div><button className="panel-link" onClick={() => setActiveView("fixtures")}>See all {database.matches.length} fixtures <ArrowRight size={14} /></button></div><div className="next-fixtures-list">{database.matches.filter((match) => match.status !== "CONFIRMED").slice(0, 3).map((match) => <MatchRow key={match.id} database={database} match={match} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</div></section>
+            <section className="panel next-fixtures-panel"><div className="panel-header"><div><p className="eyebrow">03 / NEXT UP</p><h2>Fixture desk</h2></div><button className="panel-link" onClick={() => setActiveView("fixtures")}>See all {database.matches.length} fixtures <ArrowRight size={14} /></button></div><div className="next-fixtures-list">{database.matches.filter((match) => match.status !== "CONFIRMED").slice(0, 3).map((match) => <MatchRow key={match.id} database={database} match={match} user={user} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</div></section>
           </>}
 
-          {activeView === "fixtures" && <section className="view-panel"><div className="fixture-toolbar"><div className="filter-tabs">{(["all", "upcoming", "pending", "completed"] as const).map((filter) => <button className={fixtureFilter === filter ? "selected" : ""} key={filter} onClick={() => setFixtureFilter(filter)}>{filter === "all" ? "All fixtures" : filter === "upcoming" ? "Upcoming" : filter === "pending" ? `Needs review ${pendingCount ? `· ${pendingCount}` : ""}` : "Completed"}</button>)}</div><label className="search-field"><Search size={15} /><input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search teams" /></label></div><div className="fixture-groups">{groupedFixtures.length ? groupedFixtures.map((group) => <section className="fixture-group" key={group.matchday}><div className="fixture-group-heading"><span className="matchday-number">{String(group.matchday).padStart(2, "0")}</span><div><p className="eyebrow">MATCHDAY {group.matchday}</p><h2>{formatMatchDate(group.matches[0].date)}</h2></div><span className="fixture-group-count">{group.matches.length} matches</span></div>{group.matches.map((match) => <MatchRow key={match.id} database={database} match={match} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</section>) : <div className="empty-panel"><CalendarDays size={24} /><h3>No fixtures match this view.</h3><p>Try a different status or clear the team search.</p></div>}</div></section>}
+          {activeView === "fixtures" && <section className="view-panel"><div className="fixture-toolbar"><div className="filter-tabs">{(["all", "upcoming", "pending", "completed"] as const).map((filter) => <button className={fixtureFilter === filter ? "selected" : ""} key={filter} onClick={() => setFixtureFilter(filter)}>{filter === "all" ? "All fixtures" : filter === "upcoming" ? "Upcoming" : filter === "pending" ? `Needs review ${pendingCount ? `· ${pendingCount}` : ""}` : "Completed"}</button>)}</div><label className="search-field"><Search size={15} /><input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search teams" /></label></div><div className="fixture-groups">{groupedFixtures.length ? groupedFixtures.map((group) => <section className="fixture-group" key={group.matchday}><div className="fixture-group-heading"><span className="matchday-number">{String(group.matchday).padStart(2, "0")}</span><div><p className="eyebrow">MATCHDAY {group.matchday}</p><h2>{formatMatchDate(group.matches[0].date)}</h2></div><span className="fixture-group-count">{group.matches.length} matches</span></div>{group.matches.map((match) => <MatchRow key={match.id} database={database} match={match} user={user} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</section>) : <div className="empty-panel"><CalendarDays size={24} /><h3>No fixtures match this view.</h3><p>Try a different status or clear the team search.</p></div>}</div></section>}
 
-          {activeView === "teams" && <section className="view-panel"><div className="view-toolbar"><div><p className="eyebrow">ROSTER DIRECTORY</p><h2>{database.teams.length} teams in this season</h2><p className="section-caption">Only approved teams are included in generated fixtures.</p></div><div className="view-toolbar-actions">{isAdmin && database.matches.length === 0 && database.teams.filter((team) => team.approvalStatus === "APPROVED").length >= 2 && <Button onClick={generateSchedule}><CalendarDays size={16} /> Generate schedule</Button>}{isAdmin ? <Button variant="outline" onClick={() => setShowTeamForm((current) => !current)}>{showTeamForm ? <X size={16} /> : <Plus size={16} />} {showTeamForm ? "Close form" : "Add team"}</Button> : <span className="read-only-note"><Eye size={14} /> Player view · read only</span>}</div></div>{isAdmin && database.teams.some((team) => team.approvalStatus === "PENDING") && <section className="approval-panel panel"><div className="panel-header"><div><p className="eyebrow">ADMIN QUEUE</p><h2>Teams awaiting approval</h2></div><Clock3 size={18} className="panel-icon" /></div><div className="approval-list">{database.teams.filter((team) => team.approvalStatus === "PENDING").map((team) => <div className="approval-row" key={team.id}><TeamMark team={team} size="sm" /><div><strong>{team.name}</strong><small>{team.manager} · {team.createdByEmail || "Registration request"}</small></div><div className="approval-actions"><Button onClick={() => decideTeam(team.id, "approve")}><Check size={14} /> Approve</Button><Button variant="outline" onClick={() => decideTeam(team.id, "reject")}><X size={14} /> Reject</Button></div></div>)}</div></section>}{showTeamForm && <AddTeamPanel onClose={() => setShowTeamForm(false)} onAdd={addTeam} />}<div className="team-grid">{database.teams.map((team, index) => { const row = standings.find((item) => item.id === team.id); const approval = team.approvalStatus || "APPROVED"; return <article className="team-card" key={team.id}><div className="team-card-top"><TeamMark team={team} size="lg" /><span className="team-card-rank">#{index + 1}</span><button className="icon-button"><MoreHorizontal size={17} /></button></div><h3>{team.name}</h3><p><UserRound size={13} /> {team.manager}</p><span className={`team-approval approval-${approval.toLowerCase()}`}>{approval}</span><div className="team-card-stats"><span><strong>{row?.played ?? 0}</strong><small>played</small></span><span><strong>{row?.points ?? 0}</strong><small>points</small></span><span><strong>{row?.goalDifference && row.goalDifference > 0 ? `+${row.goalDifference}` : row?.goalDifference ?? 0}</strong><small>goal diff</small></span></div><div className="team-card-footer"><span className="team-record"><span className="record-dot" />{approval === "APPROVED" ? "Eligible for fixtures" : "Not in schedule yet"}</span><ArrowRight size={15} /></div></article>; })}</div></section>}
+          {activeView === "teams" && <section className="view-panel"><div className="view-toolbar"><div><p className="eyebrow">ROSTER DIRECTORY</p><h2>{database.teams.length} teams in this season</h2><p className="section-caption">Only approved teams are included in generated fixtures.</p></div><div className="view-toolbar-actions">{isAdmin && <Button disabled={!useBackend || tournamentStarted || approvedTeamCount < 2} title={!useBackend ? "Live backend mode is required" : tournamentStarted ? "This tournament already has fixtures" : approvedTeamCount < 2 ? "Approve at least two teams first" : "Start the tournament and generate fixtures"} onClick={startTournament}><Flag size={16} /> {tournamentStarted ? "Tournament active" : "Start tournament"}</Button>}{isAdmin ? <Button variant="outline" onClick={() => setShowTeamForm((current) => !current)}>{showTeamForm ? <X size={16} /> : <Plus size={16} />} {showTeamForm ? "Close form" : "Add team"}</Button> : <span className="read-only-note"><Eye size={14} /> Player view · read only</span>}</div></div>{isAdmin && database.teams.some((team) => team.approvalStatus === "PENDING") && <section className="approval-panel panel"><div className="panel-header"><div><p className="eyebrow">ADMIN QUEUE</p><h2>Teams awaiting approval</h2></div><Clock3 size={18} className="panel-icon" /></div><div className="approval-list">{database.teams.filter((team) => team.approvalStatus === "PENDING").map((team) => <div className="approval-row" key={team.id}><TeamMark team={team} size="sm" /><div><strong>{team.name}</strong><small>{team.manager} · {team.createdByEmail || "Registration request"}</small></div><div className="approval-actions"><Button onClick={() => decideTeam(team.id, "approve")}><Check size={14} /> Approve</Button><Button variant="outline" onClick={() => decideTeam(team.id, "reject")}><X size={14} /> Reject</Button></div></div>)}</div></section>}{showTeamForm && <AddTeamPanel onClose={() => setShowTeamForm(false)} onAdd={addTeam} />}<div className="team-grid">{database.teams.map((team, index) => { const row = standings.find((item) => item.id === team.id); const approval = team.approvalStatus || "APPROVED"; return <article className="team-card" key={team.id}><div className="team-card-top"><TeamMark team={team} size="lg" /><span className="team-card-rank">#{index + 1}</span><button className="icon-button"><MoreHorizontal size={17} /></button></div><h3>{team.name}</h3><p><UserRound size={13} /> {team.manager}</p><span className={`team-approval approval-${approval.toLowerCase()}`}>{approval}</span><div className="team-card-stats"><span><strong>{row?.played ?? 0}</strong><small>played</small></span><span><strong>{row?.points ?? 0}</strong><small>points</small></span><span><strong>{row?.goalDifference && row.goalDifference > 0 ? `+${row.goalDifference}` : row?.goalDifference ?? 0}</strong><small>goal diff</small></span></div><div className="team-card-footer"><span className="team-record"><span className="record-dot" />{approval === "APPROVED" ? "Eligible for fixtures" : "Not in schedule yet"}</span><ArrowRight size={15} /></div></article>; })}</div></section>}
 
           {activeView === "table" && <section className="view-panel"><div className="table-view-grid"><section className="panel full-table-panel"><div className="panel-header"><div><p className="eyebrow">OFFICIAL STANDINGS</p><h2>{database.league.name} table</h2></div><span className="table-updated"><span />Updated live</span></div><StandingTable standings={standings} /></section><aside className="panel golden-boot-panel"><div className="panel-header"><div><p className="eyebrow">PLAYER STATS</p><h2>Golden Boot</h2></div><Trophy size={18} className="panel-icon" /></div><div className="scorer-list">{scorers.slice(0, 6).map((player, index) => <div className="scorer-row" key={`${player.teamId}-${player.name}`}><span className="scorer-rank">{String(index + 1).padStart(2, "0")}</span><div className="scorer-avatar">{initials(player.name)}</div><div><strong>{player.name}</strong><small>{player.teamName}</small></div><b>{player.goals}</b></div>)}{!scorers.length && <p className="muted-copy">Goal scorer data will appear after the first confirmed result.</p>}</div></aside></div><PlayerStatsPanel stats={playerStats} /></section>}
 
