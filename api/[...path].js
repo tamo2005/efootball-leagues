@@ -823,13 +823,16 @@ async function createSeasonSchedule(seasonId, actorEmail) {
     const [existing] = await connection.query("SELECT COUNT(*) AS count FROM matches WHERE season_id = ?", [seasonId]);
     const existingRows = existing;
     if (Number(existingRows[0]?.count || 0) > 0) throw new ApiError(409, "SCHEDULE_EXISTS", "This season already has fixtures. Use the existing tournament instead of starting it again.");
+    const fixturePlaceholders = fixtures.map(() => "(?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)").join(", ");
+    const fixtureValues = [];
     for (const fixture of fixtures) {
-      await connection.execute(
-        `INSERT INTO matches (season_id, matchday, home_team_id, away_team_id, kickoff_at, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)`,
-        [seasonId, fixture.matchday, fixture.homeTeamId, fixture.awayTeamId, fixture.kickoffAt, now, now]
-      );
+      fixtureValues.push(seasonId, fixture.matchday, fixture.homeTeamId, fixture.awayTeamId, fixture.kickoffAt, now, now);
     }
+    await connection.execute(
+      `INSERT INTO matches (season_id, matchday, home_team_id, away_team_id, kickoff_at, status, created_at, updated_at)
+       VALUES ${fixturePlaceholders}`,
+      fixtureValues
+    );
     await connection.execute("UPDATE seasons SET status = 'ACTIVE', matchday_count = ?, current_matchday = 1, updated_at = ? WHERE id = ?", [Math.max(...fixtures.map((fixture) => fixture.matchday)), now, seasonId]);
     await connection.execute(
       `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
