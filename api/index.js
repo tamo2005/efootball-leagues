@@ -658,6 +658,32 @@ app.post("/api/admin/seasons/:seasonId/schedule", asyncRoute(async (request, res
   const result = await createSeasonSchedule(Number(request.params.seasonId), user.email);
   response.status(201).json(result);
 }));
+app.post("/api/admin/seasons/:seasonId/reset", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const seasonId = Number(request.params.seasonId);
+  if (!Number.isInteger(seasonId) || seasonId <= 0) {
+    response.status(400).json({ error: "INVALID_SEASON_ID", message: "That season identifier is invalid." });
+    return;
+  }
+  const now = Date.now();
+  let deletedMatches = 0;
+  await withTransaction(async (connection) => {
+    const [seasonResult] = await connection.query("SELECT id, name FROM seasons WHERE id = ? LIMIT 1", [seasonId]);
+    const seasons = seasonResult;
+    if (!seasons[0]) throw new ApiError(404, "SEASON_NOT_FOUND", "That tournament season no longer exists.");
+    const [countResult] = await connection.query("SELECT COUNT(*) AS count FROM matches WHERE season_id = ?", [seasonId]);
+    deletedMatches = Number(countResult[0]?.count || 0);
+    await connection.execute("DELETE FROM matches WHERE season_id = ?", [seasonId]);
+    await connection.execute("UPDATE seasons SET status = 'DRAFT', matchday_count = 0, current_matchday = 0, updated_at = ? WHERE id = ?", [now, seasonId]);
+    await connection.execute(
+      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+       VALUES (?, 'RESET_TOURNAMENT', 'season', ?, JSON_OBJECT('deletedMatches', ?), ?)`,
+      [user.email, String(seasonId), deletedMatches, now]
+    );
+  });
+  response.json({ seasonId, deletedMatches, status: "DRAFT" });
+}));
 app.post("/api/admin/seasons/:seasonId/start", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
   if (!user) return;
