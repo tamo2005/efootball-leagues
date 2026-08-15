@@ -44,6 +44,7 @@ export type Match = {
   id: string;
   matchday: number;
   date: string;
+  kickoffAt?: string;
   homeTeamId: string;
   awayTeamId: string;
   homeScore: number | null;
@@ -85,6 +86,16 @@ export type Standing = Team & {
   goalDifference: number;
   points: number;
   form: ("W" | "D" | "L")[];
+};
+
+export type TeamPerformance = {
+  teamId: string;
+  teamName: string;
+  shortName: string;
+  goalsFor: number;
+  goalsAgainst: number;
+  matchesPlayed: number;
+  cleanSheets: number;
 };
 
 export type PlayerStat = {
@@ -267,9 +278,20 @@ export function currentUser(database: LeagueDatabase) {
   return database.users.find((user) => user.id === database.currentUserId && user.active) ?? null;
 }
 
-export function isMatchDateOpen(match: Pick<Match, "date">, now = new Date()) {
+export function isMatchDateOpen(match: Pick<Match, "date" | "kickoffAt">, now = new Date()) {
+  if (match.kickoffAt) {
+    const kickoffAt = new Date(match.kickoffAt).getTime();
+    if (Number.isFinite(kickoffAt)) return now.getTime() >= kickoffAt;
+  }
   const todayKey = now.toISOString().slice(0, 10);
   return match.date <= todayKey;
+}
+
+export function formatMatchKickoff(match: Pick<Match, "date" | "kickoffAt">) {
+  if (!match.kickoffAt) return "Time TBC";
+  const kickoff = new Date(match.kickoffAt);
+  if (!Number.isFinite(kickoff.getTime())) return "Time TBC";
+  return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(kickoff);
 }
 
 export function canSubmitMatch(user: UserAccount | null, match: Match) {
@@ -344,6 +366,24 @@ export function calculateStandings(database: LeagueDatabase): Standing[] {
     }
     return a.name.localeCompare(b.name);
   });
+}
+
+export function calculateTeamPerformance(database: LeagueDatabase): TeamPerformance[] {
+  const rows = new Map(database.teams.map((team) => [team.id, { teamId: team.id, teamName: team.name, shortName: team.shortName, goalsFor: 0, goalsAgainst: 0, matchesPlayed: 0, cleanSheets: 0 }]));
+  database.matches.filter((match) => match.status === "CONFIRMED" && match.homeScore !== null && match.awayScore !== null).forEach((match) => {
+    const home = rows.get(match.homeTeamId);
+    const away = rows.get(match.awayTeamId);
+    if (!home || !away) return;
+    home.matchesPlayed += 1;
+    away.matchesPlayed += 1;
+    home.goalsFor += match.homeScore ?? 0;
+    home.goalsAgainst += match.awayScore ?? 0;
+    away.goalsFor += match.awayScore ?? 0;
+    away.goalsAgainst += match.homeScore ?? 0;
+    if (match.awayScore === 0) home.cleanSheets += 1;
+    if (match.homeScore === 0) away.cleanSheets += 1;
+  });
+  return Array.from(rows.values());
 }
 
 export function livePlayerStats(database: LeagueDatabase): PlayerStat[] {

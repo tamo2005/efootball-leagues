@@ -141,6 +141,7 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
     id: String(match.id),
     matchday: Number(match.matchday),
     date: new Date(Number(match.kickoff_at)).toISOString().slice(0, 10),
+    kickoffAt: match.kickoff_at ? new Date(Number(match.kickoff_at)).toISOString() : undefined,
     homeTeamId: String(match.home_team_id),
     awayTeamId: String(match.away_team_id),
     homeScore: match.home_score === null || match.home_score === undefined ? null : Number(match.home_score),

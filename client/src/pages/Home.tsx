@@ -42,6 +42,8 @@ import {
   DEFAULT_TIEBREAKERS,
   canConfirmMatch,
   canSubmitMatch,
+  calculateTeamPerformance,
+  formatMatchKickoff,
   isMatchDateOpen,
   countConfirmed,
   countPending,
@@ -62,6 +64,7 @@ import {
   type PlayerStat,
   type Standing,
   type Team,
+  type TeamPerformance,
   type TiebreakerRule,
   type UserAccount,
 } from "@/lib/league-db";
@@ -146,7 +149,7 @@ function MatchRow({ database, match, user, isAdmin, onResult, onConfirm, onResch
   const canEnter = canSubmitMatch(user, match);
   return (
     <article className={`match-row ${owned ? "match-row-owned" : ""} ${settled ? "match-row-settled" : ""}`}>
-      <div className="match-date"><span>{shortDay(match.date)}</span><strong>{formatMatchDate(match.date)}</strong><small>Matchday {match.matchday}</small></div>
+      <div className="match-date"><span>{shortDay(match.date)}</span><strong>{formatMatchDate(match.date)}</strong><small>{formatMatchKickoff(match)} · Matchday {match.matchday}</small></div>
       <div className="match-teams">
         <div className={`match-team home ${homeWon ? "match-team-winner" : ""}`}><span>{home?.name}</span>{homeWon && <b className="winner-tag">WINNER</b>}<TeamMark team={home} size="sm" /></div>
         <div className={`match-score ${outcomeLabel ? "match-score-settled" : ""}`}>
@@ -262,6 +265,13 @@ function LoginPanel({ database, onLogin, useBackend }: { database: LeagueDatabas
 
 function PlayerStatsPanel({ stats }: { stats: PlayerStat[] }) {
   return <section className="panel stats-panel"><div className="panel-header"><div><p className="eyebrow">LIVE PLAYER INTELLIGENCE</p><h2>Form & scoring</h2></div><BarChart3 size={18} className="panel-icon" /></div><div className="player-stat-grid">{stats.slice(0, 8).map((player, index) => <article className="player-stat-card" key={`${player.teamId}-${player.playerEmail || player.name}`}><div className="player-stat-heading"><span className="scorer-rank">{String(index + 1).padStart(2, "0")}</span><div className="scorer-avatar">{initials(player.name)}</div><div><strong>{player.name}</strong><small>{player.teamName}</small></div></div><div className="player-stat-metrics"><span><b>{player.officialGoals}</b><small>official</small></span><span><b>{player.pendingGoals}</b><small>pending</small></span><span><b>{player.appearances}</b><small>matches</small></span><span><b>{player.averageMinute || "—"}</b><small>avg min</small></span></div></article>)}{!stats.length && <p className="muted-copy">Player data will appear as scorers are logged.</p>}</div><p className="table-footnote"><Eye size={14} /> Pending goals are visible immediately but only confirmed goals count toward the official Golden Boot.</p></section>;
+}
+
+function TeamPerformancePanel({ performance }: { performance: TeamPerformance[] }) {
+  const scoringLeaders = [...performance].sort((a, b) => b.goalsFor - a.goalsFor || b.goalsAgainst - a.goalsAgainst || a.teamName.localeCompare(b.teamName)).slice(0, 5);
+  const cleanSheetLeaders = [...performance].sort((a, b) => b.cleanSheets - a.cleanSheets || a.goalsAgainst - b.goalsAgainst || a.teamName.localeCompare(b.teamName)).slice(0, 5);
+  const leaderRows = (rows: TeamPerformance[], metric: "goals" | "cleanSheets") => rows.map((team, index) => <div className="team-performance-row" key={`${metric}-${team.teamId}`}><span className={`team-performance-rank ${index === 0 ? "leader" : ""}`}>{String(index + 1).padStart(2, "0")}</span><div className="team-performance-team"><span className="team-performance-code">{team.shortName}</span><strong>{team.teamName}</strong></div><strong className="team-performance-value">{metric === "goals" ? team.goalsFor : team.cleanSheets}</strong></div>);
+  return <section className="panel team-performance-panel"><div className="panel-header"><div><p className="eyebrow">LIVE TEAM INTELLIGENCE</p><h2>Attack & defensive record</h2><p className="section-caption">Confirmed matches only. A clean sheet means conceding zero goals in one match.</p></div><Trophy size={18} className="panel-icon" /></div><div className="team-performance-grid"><div className="team-performance-column"><div className="team-performance-heading"><span>Highest scoring teams</span><small>Goals for</small></div>{leaderRows(scoringLeaders, "goals")}</div><div className="team-performance-column"><div className="team-performance-heading"><span>Most clean sheets</span><small>0 goals conceded</small></div>{leaderRows(cleanSheetLeaders, "cleanSheets")}</div></div>{!performance.some((team) => team.matchesPlayed > 0) && <p className="muted-copy">Confirmed match results will populate these rankings.</p>}</section>;
 }
 
 function ScorerReviewPanel({ reviews, onAnalyze, onApprove, onReject, busy }: { reviews: BackendScorerReview[]; onAnalyze: () => void; onApprove: (reviewId: number) => void; onReject: (reviewId: number) => void; busy: boolean }) {
@@ -424,6 +434,7 @@ export default function Home() {
   const standings = useMemo(() => calculateStandings(database), [database]);
   const scorers = useMemo(() => leaderboard(database), [database]);
   const playerStats = useMemo(() => livePlayerStats(database), [database]);
+  const teamPerformance = useMemo(() => calculateTeamPerformance(database), [database]);
   const confirmedCount = countConfirmed(database);
   const pendingCount = countPending(database);
   const nextMatch = database.matches.find((match) => match.status === "SCHEDULED");
@@ -463,7 +474,7 @@ export default function Home() {
       return;
     }
     if (!isMatchDateOpen(match)) {
-      toast("Matchday is not open yet", { description: `This result can be entered on ${formatMatchDate(match.date)} or later.` });
+      toast("Matchday is not open yet", { description: `This result opens at ${formatMatchDate(match.date)} · ${formatMatchKickoff(match)} in your local time.` });
       return;
     }
     if (user.role !== "admin" && user.teamId !== match.homeTeamId) {
@@ -528,7 +539,7 @@ export default function Home() {
       return;
     }
     if (!isMatchDateOpen(match)) {
-      toast("Matchday is not open yet", { description: `This result can be entered on ${formatMatchDate(match.date)} or later.` });
+      toast("Matchday is not open yet", { description: `This result opens at ${formatMatchDate(match.date)} · ${formatMatchKickoff(match)} in your local time.` });
       return;
     }
     if (user.role !== "admin" && user.teamId !== match.homeTeamId) {
@@ -768,6 +779,7 @@ export default function Home() {
             <div className="hero-grid"><section className="hero-card"><div className="hero-copy"><span className="hero-kicker"><span className="hero-live-dot" /> Matchday {database.matches[0]?.matchday ?? 1} in progress</span><h2>Keep the league<br /><em>moving forward.</em></h2><p>{pendingCount ? `${pendingCount} result is waiting for confirmation. Keep the official table clean with one quick review.` : "All results are up to date. The next fixture is ready when your players are."}</p><div className="hero-actions"><Button onClick={() => openResult()}>{pendingCount ? "Review pending result" : "Enter next result"} <ArrowRight size={15} /></Button><button className="hero-text-action" onClick={() => setActiveView("fixtures")}>Open match centre <ArrowRight size={14} /></button></div></div><div className="pitch-art" aria-hidden="true"><div className="pitch-line pitch-midline" /><div className="pitch-circle" /><div className="pitch-box pitch-box-top" /><div className="pitch-box pitch-box-bottom" /><span className="pitch-player player-one" /><span className="pitch-player player-two" /><span className="pitch-player player-three" /><span className="pitch-player player-four" /></div></section><aside className="attention-card"><div className="attention-top"><span className="eyebrow">NEEDS YOUR ATTENTION</span><span className="attention-icon"><Bell size={16} /></span></div><strong>{pendingCount ? "One result is waiting" : "No reviews waiting"}</strong><p>{pendingMatch ? `${teamById(database.teams, pendingMatch.homeTeamId)?.name} submitted a ${pendingMatch.homeScore}–${pendingMatch.awayScore} result against ${teamById(database.teams, pendingMatch.awayTeamId)?.name}.` : "Your league is clear. New submissions will appear here."}</p>{pendingMatch && isAdmin ? <button onClick={() => confirmMatch(pendingMatch.id)}>Confirm result <Check size={15} /></button> : <span className="attention-clear"><ShieldCheck size={15} />{pendingMatch ? "Awaiting admin review" : "Everything is up to date"}</span>}</aside></div>
             <div className="metric-grid"><MetricCard label="Confirmed matches" value={`${confirmedCount} / ${database.matches.length}`} note={`${database.matches.length ? Math.round((confirmedCount / database.matches.length) * 100) : 0}% of the season complete`} accent="#9dd36a" icon={Check} /><MetricCard label="Pending confirmation" value={String(pendingCount).padStart(2, "0")} note="Review before the table updates" accent="#f0b35b" icon={Clock3} /><MetricCard label="Teams competing" value={String(database.teams.length).padStart(2, "0")} note="All manager records are assigned" accent="#79b9f2" icon={Users} /><MetricCard label="Database health" value="100%" note="No duplicate or missing records" accent="#bf9cf3" icon={Database} /></div>
             <div className="dashboard-grid"><section className="panel standings-panel"><div className="panel-header"><div><p className="eyebrow">01 / OFFICIAL TABLE</p><h2>Standings</h2></div><button className="panel-link" onClick={() => setActiveView("table")}>Full table <ArrowRight size={14} /></button></div><StandingTable standings={standings} compact /></section><section className="panel activity-panel"><div className="panel-header"><div><p className="eyebrow">02 / LIVE FEED</p><h2>Recent activity</h2></div><Activity size={18} className="panel-icon" /></div><ActivityFeed activities={database.activities} /></section></div>
+            <TeamPerformancePanel performance={teamPerformance} />
             <section className="panel next-fixtures-panel"><div className="panel-header"><div><p className="eyebrow">03 / NEXT UP</p><h2>Fixture desk</h2></div><button className="panel-link" onClick={() => setActiveView("fixtures")}>See all {database.matches.length} fixtures <ArrowRight size={14} /></button></div><div className="next-fixtures-list">{database.matches.filter((match) => match.status !== "CONFIRMED").slice(0, 3).map((match) => <MatchRow key={match.id} database={database} match={match} user={user} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</div></section>
           </>}
 

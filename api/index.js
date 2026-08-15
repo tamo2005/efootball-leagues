@@ -425,6 +425,8 @@ async function processScorerNameReview(reviewId) {
     "Return only one JSON object with exactly these keys: suggestedFullName, confidence, reason, matchedEmail, needsManualReview.",
     "confidence must be a number from 0 to 1. matchedEmail must be null unless the suggestion exactly matches one registered player.",
     "Set needsManualReview to true whenever the correction is uncertain or the name is not an exact registered player.",
+    "When the submitted name is a recognizable footballer shorthand or misspelling, return the player\u2019s conventional full name. For example, \u2018Gulit\u2019 should be suggested as \u2018Ruud Gullit\u2019, \u2018Ronaldo\u2019 may be \u2018Cristiano Ronaldo\u2019 only when the team context supports it, and \u2018Messi\u2019 may be \u2018Lionel Messi\u2019 only when the context supports it.",
+    "Do not invent a footballer. If several real players could match, keep the submitted name as the suggestion and set needsManualReview to true.",
     `Team: ${review.team_name}`,
     `Submitted scorer name: ${review.submitted_name}`,
     `Registered team players:\\n${playerContext}`,
@@ -458,8 +460,21 @@ async function processScorerNameReview(reviewId) {
 }
 async function processScorerNameReviews(reviewIds) {
   const results = [];
-  for (const reviewId of reviewIds.slice(0, 50)) results.push(await processScorerNameReview(reviewId));
+  for (const reviewId of reviewIds.slice(0, 100)) results.push(await processScorerNameReview(reviewId));
   return results;
+}
+async function backfillScorerReviewRecords() {
+  await ensureScorerReviewTable();
+  const now = Date.now();
+  await query(
+    `INSERT INTO scorer_name_reviews (match_id, goal_id, team_id, submitted_name, status, created_at, updated_at)
+     SELECT g.match_id, g.id, g.team_id, g.scorer_name, 'PENDING', :now, :now
+       FROM goals g
+       JOIN matches m ON m.id = g.match_id
+       LEFT JOIN scorer_name_reviews r ON r.goal_id = g.id
+      WHERE r.id IS NULL`,
+    { now }
+  );
 }
 async function scorerReviewRows(status) {
   const statusFilter = status === "APPROVED" || status === "REJECTED" || status === "FAILED" || status === "PENDING" ? status : null;
@@ -763,18 +778,18 @@ app.get("/api/teams/:teamId/scorers", asyncRoute(async (request, response) => {
 app.get("/api/admin/scorer-reviews", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
   if (!user) return;
-  await ensureScorerReviewTable();
+  await backfillScorerReviewRecords();
   response.json({ reviews: await scorerReviewRows(typeof request.query.status === "string" ? request.query.status : void 0) });
 }));
 app.post("/api/admin/scorer-reviews/analyze", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
   if (!user) return;
-  await ensureScorerReviewTable();
+  await backfillScorerReviewRecords();
   const rows = await query(
     `SELECT id FROM scorer_name_reviews
       WHERE status IN ('PENDING', 'FAILED')
       ORDER BY CASE WHEN suggested_name IS NULL THEN 0 ELSE 1 END, created_at ASC
-      LIMIT 50`
+      LIMIT 100`
   );
   const results = await processScorerNameReviews(rows.map((row) => Number(row.id)));
   response.json({ analyzed: results.filter((item) => item.status === "PENDING").length, failed: results.filter((item) => item.status === "FAILED").length, reviews: await scorerReviewRows() });
@@ -1250,10 +1265,9 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     response.status(409).json({ error: "MATCH_CONFIRMED", message: "Official results cannot be overwritten." });
     return;
   }
-  const kickoffDate = new Date(Number(match.kickoff_at)).toISOString().slice(0, 10);
-  const todayDate = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  if (todayDate < kickoffDate) {
-    response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${kickoffDate}. Results cannot be entered before the scheduled date.` });
+  const kickoffAt = Number(match.kickoff_at);
+  if (!Number.isFinite(kickoffAt) || Date.now() < kickoffAt) {
+    response.status(425).json({ error: "MATCH_NOT_OPEN", message: "This fixture is not open yet. Results unlock at the scheduled kickoff time." });
     return;
   }
   if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {
