@@ -12,6 +12,29 @@ app.use(express.json({ limit: "1mb" }));
 
 const GOOGLE_STATE_COOKIE = "eleague_google_state";
 const GOOGLE_STATE_TTL_MS = 10 * 60 * 1000;
+const LEAGUE_TIME_ZONE = "Asia/Kolkata";
+
+function leagueDateKey(timestamp = Date.now()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: LEAGUE_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(timestamp));
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function formatLeagueKickoff(timestamp: number) {
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: LEAGUE_TIME_ZONE,
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
 
 function cookieValue(request: Request, name: string) {
   const cookies = Object.fromEntries((request.headers.cookie || "").split(";").map((part) => part.trim().split("=")).filter(([key, value]) => key && value).map(([key, ...value]) => [key, decodeURIComponent(value.join("="))]));
@@ -1108,8 +1131,9 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     return;
   }
   const kickoffAt = Number(match.kickoff_at);
-  if (!Number.isFinite(kickoffAt) || Date.now() < kickoffAt) {
-    response.status(425).json({ error: "MATCH_NOT_OPEN", message: "This fixture is not open yet. Results unlock at the scheduled kickoff time." });
+  const scheduledDate = Number.isFinite(kickoffAt) ? leagueDateKey(kickoffAt) : "";
+  if (!scheduledDate || leagueDateKey() < scheduledDate) {
+    response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${Number.isFinite(kickoffAt) ? formatLeagueKickoff(kickoffAt) : "its scheduled date"}. Results can be entered from the scheduled league date.` });
     return;
   }
   if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {

@@ -48,6 +48,7 @@ import {
   countConfirmed,
   countPending,
   formatMatchDate,
+  leagueDateKey,
   currentUser as getCurrentUser,
   getDatabase,
   leaderboard,
@@ -95,10 +96,7 @@ function shortDay(date: string) {
 }
 
 function dateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return leagueDateKey(date);
 }
 
 function isUserFixture(match: Match, user: UserAccount) {
@@ -107,7 +105,7 @@ function isUserFixture(match: Match, user: UserAccount) {
 
 function fixtureStateCopy(match: Match) {
   if (match.status === "PENDING") return "Result submitted · awaiting admin confirmation";
-  if (match.status === "SCHEDULED") return "Did not play yet";
+  if (match.status === "SCHEDULED") return isMatchDateOpen(match) ? "Ready for the home team" : `Opens ${formatMatchDate(match.date)}`;
   if (match.status === "POSTPONED") return "New date required";
   if (match.status === "DISPUTED") return "Needs admin review";
   return match.goals.length ? `${match.goals.length} goal${match.goals.length === 1 ? "" : "s"} logged` : "Official result";
@@ -161,7 +159,7 @@ function MatchRow({ database, match, user, isAdmin, onResult, onConfirm, onResch
       <div className="match-actions">
         {canConfirm && <button className="confirm-link" onClick={() => onConfirm(match.id)}><Check size={14} /> Confirm</button>}
         {isAdmin && match.status !== "CONFIRMED" && <button className="row-action row-action-secondary" onClick={() => onReschedule(match.id)}>{match.status === "POSTPONED" ? "Adjust date" : "Postpone"}</button>}
-        {canEnter ? <button className="row-action" onClick={() => onResult(match.id)}>{match.status === "SCHEDULED" || match.status === "POSTPONED" ? "Enter result" : "View result"}<ArrowRight size={14} /></button> : <span className="match-locked"><Clock3 size={13} />{match.status === "CONFIRMED" ? "Official" : dateOpen ? "Home team only" : "Not open yet"}</span>}
+        {canEnter ? <button className="row-action" onClick={() => onResult(match.id)}>{match.status === "SCHEDULED" || match.status === "POSTPONED" ? "Enter result" : "View result"}<ArrowRight size={14} /></button> : <span className="match-locked"><Clock3 size={13} />{match.status === "CONFIRMED" ? "Official" : dateOpen ? "Home team only" : `Opens ${formatMatchDate(match.date)}`}</span>}
       </div>
     </article>
   );
@@ -414,9 +412,14 @@ export default function Home() {
   const [searchTerm, setSearchTerm] = useState("");
   const [scorerReviews, setScorerReviews] = useState<BackendScorerReview[]>([]);
   const [scorerReviewBusy, setScorerReviewBusy] = useState(false);
+  const [clockNow, setClockNow] = useState(() => Date.now());
 
   const useBackend = backendEnabled();
   useEffect(() => saveDatabase(database), [database]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     if (!useBackend) {
       setRemoteUser(null);
@@ -447,7 +450,7 @@ export default function Home() {
     const away = teamById(database.teams, match.awayTeamId)?.name.toLowerCase() ?? "";
     return statusMatch && (!searchTerm || home.includes(searchTerm.toLowerCase()) || away.includes(searchTerm.toLowerCase()));
   }), [database.teams, fixtureFilter, scopedMatches, searchTerm]);
-  const todayMatches = useMemo(() => database.matches.filter((match) => match.date === dateKey()), [database.matches]);
+  const todayMatches = useMemo(() => database.matches.filter((match) => match.date === dateKey(new Date(clockNow))), [database.matches, clockNow]);
   const groupedFixtures = useMemo(() => Array.from(new Set(filteredMatches.map((match) => match.matchday))).map((matchday) => ({ matchday, matches: filteredMatches.filter((match) => match.matchday === matchday) })), [filteredMatches]);
 
   function handleLogin(nextUser: UserAccount) {
@@ -474,7 +477,7 @@ export default function Home() {
       return;
     }
     if (!isMatchDateOpen(match)) {
-      toast("Matchday is not open yet", { description: `This result opens at ${formatMatchDate(match.date)} · ${formatMatchKickoff(match)} in your local time.` });
+      toast("Matchday is not open yet", { description: `This result opens from ${formatMatchDate(match.date)} in league time. The listed kickoff is ${formatMatchKickoff(match)}.` });
       return;
     }
     if (user.role !== "admin" && user.teamId !== match.homeTeamId) {
@@ -556,7 +559,7 @@ export default function Home() {
       return;
     }
     if (!isMatchDateOpen(match)) {
-      toast("Matchday is not open yet", { description: `This result opens at ${formatMatchDate(match.date)} · ${formatMatchKickoff(match)} in your local time.` });
+      toast("Matchday is not open yet", { description: `This result opens from ${formatMatchDate(match.date)} in league time. The listed kickoff is ${formatMatchKickoff(match)}.` });
       return;
     }
     if (user.role !== "admin" && user.teamId !== match.homeTeamId) {

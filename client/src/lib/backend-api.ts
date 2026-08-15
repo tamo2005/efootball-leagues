@@ -109,6 +109,7 @@ export function backendDashboard() {
   return request<BackendDashboard>("/api/dashboard");
 }
 
+import { matchDateKey } from "./league-db";
 import type { Goal, LeagueDatabase, Match } from "./league-db";
 
 export function mergeBackendDashboard(current: LeagueDatabase, snapshot: BackendDashboard): LeagueDatabase {
@@ -140,7 +141,7 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
   const matches: Match[] = snapshot.matches.map((match) => ({
     id: String(match.id),
     matchday: Number(match.matchday),
-    date: new Date(Number(match.kickoff_at)).toISOString().slice(0, 10),
+    date: match.kickoff_at ? matchDateKey(Number(match.kickoff_at)) : "",
     kickoffAt: match.kickoff_at ? new Date(Number(match.kickoff_at)).toISOString() : undefined,
     homeTeamId: String(match.home_team_id),
     awayTeamId: String(match.away_team_id),

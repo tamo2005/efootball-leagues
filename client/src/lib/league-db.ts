@@ -278,20 +278,34 @@ export function currentUser(database: LeagueDatabase) {
   return database.users.find((user) => user.id === database.currentUserId && user.active) ?? null;
 }
 
+export const LEAGUE_TIME_ZONE = "Asia/Kolkata";
+
+export function leagueDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: LEAGUE_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+export function matchDateKey(timestamp: number | string | Date) {
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  return Number.isFinite(date.getTime()) ? leagueDateKey(date) : "";
+}
+
 export function isMatchDateOpen(match: Pick<Match, "date" | "kickoffAt">, now = new Date()) {
-  if (match.kickoffAt) {
-    const kickoffAt = new Date(match.kickoffAt).getTime();
-    if (Number.isFinite(kickoffAt)) return now.getTime() >= kickoffAt;
-  }
-  const todayKey = now.toISOString().slice(0, 10);
-  return match.date <= todayKey;
+  const scheduledDate = match.kickoffAt ? matchDateKey(match.kickoffAt) : match.date;
+  return Boolean(scheduledDate) && scheduledDate <= leagueDateKey(now);
 }
 
 export function formatMatchKickoff(match: Pick<Match, "date" | "kickoffAt">) {
   if (!match.kickoffAt) return "Time TBC";
   const kickoff = new Date(match.kickoffAt);
   if (!Number.isFinite(kickoff.getTime())) return "Time TBC";
-  return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(kickoff);
+  return new Intl.DateTimeFormat("en-GB", { timeZone: LEAGUE_TIME_ZONE, hour: "2-digit", minute: "2-digit" }).format(kickoff);
 }
 
 export function canSubmitMatch(user: UserAccount | null, match: Match) {
