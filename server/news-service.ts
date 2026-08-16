@@ -133,10 +133,10 @@ async function buildEvidence(seasonId: number): Promise<Evidence> {
   const cleanSheetLeader = [...teamPerformance].sort((a, b) => numeric(b.cleanSheets) - numeric(a.cleanSheets))[0];
   const facts: Record<string, string> = {
     confirmed_matches: `${confirmedRows.length} of ${matchRows.length} scheduled matches are confirmed.`,
-    leader: leader ? `${leader.name} lead the table with ${leader.points} points from ${leader.played} matches.` : "There is no confirmed standings leader yet.",
-    top_scorer: topScorer ? `${topScorer.name} lead the scoring chart with ${topScorer.goals} goals for ${topScorer.teamName}.` : "No confirmed goals have been recorded yet.",
-    clean_sheet_leader: cleanSheetLeader ? `${cleanSheetLeader.teamName} have ${cleanSheetLeader.cleanSheets} clean sheets from ${cleanSheetLeader.matchesPlayed} confirmed matches.` : "No clean sheets are recorded yet.",
-    latest_result: latestResults[0] ? `${latestResults[0].home} drew the latest recorded scoreline ${latestResults[0].score} with ${latestResults[0].away}.` : "There is no confirmed result to recap yet.",
+    leader: leader ? `${leader.name} leads the table with ${leader.points} points from ${leader.played} matches.` : "There is no confirmed standings leader yet.",
+    top_scorer: topScorer ? `${topScorer.name} leads the scoring chart with ${topScorer.goals} goals for ${topScorer.teamName}.` : "No confirmed goals have been recorded yet.",
+    clean_sheet_leader: cleanSheetLeader ? `${cleanSheetLeader.teamName} recorded ${cleanSheetLeader.cleanSheets} clean sheet${numeric(cleanSheetLeader.cleanSheets) === 1 ? "" : "s"} from ${cleanSheetLeader.matchesPlayed} confirmed matches.` : "No clean sheets are recorded yet.",
+    latest_result: latestResults[0] ? (() => { const [homeScore, awayScore] = String(latestResults[0].score).split("-").map(Number); const result = homeScore === awayScore ? `${latestResults[0].home} drew ${latestResults[0].away}` : homeScore > awayScore ? `${latestResults[0].home} beat ${latestResults[0].away}` : `${latestResults[0].away} beat ${latestResults[0].home}`; return `${result} in the latest recorded scoreline ${latestResults[0].score}.`; })() : "There is no confirmed result to recap yet.",
     next_match: upcomingMatches[0] ? `The next listed fixture is ${upcomingMatches[0].home} versus ${upcomingMatches[0].away} on ${upcomingMatches[0].date}.` : "There is no upcoming fixture currently listed.",
   };
   return { seasonId, seasonName: season.name, status: season.status, asOfDate: leagueDateKey(), confirmedMatches: confirmedRows.length, totalMatches: matchRows.length, standings: standings.slice(0, 8) as unknown as Array<Record<string, unknown>>, topScorers, teamPerformance, latestResults, upcomingMatches, facts, previousSeasons: archiveRows.map((archive) => ({ seasonName: archive.season_name, completedAt: archive.completed_at, standings: parseObject(archive.standings_json) || archive.standings_json })) };
@@ -146,8 +146,23 @@ function fallbackStories(evidence: Evidence): GeneratedStory[] {
   const stories: GeneratedStory[] = [];
   if (evidence.latestResults.length) stories.push({ storyType: "MATCHDAY_RECAP", headline: `The latest matchday leaves ${evidence.seasonName} with more to watch`, description: `${evidence.facts.latest_result} The official table now has ${evidence.facts.confirmed_matches.toLowerCase()}`, factIds: ["latest_result", "confirmed_matches"] });
   if (evidence.upcomingMatches.length) stories.push({ storyType: "UPCOMING_PREVIEW", headline: `Next up: ${evidence.upcomingMatches[0].home} meet ${evidence.upcomingMatches[0].away}`, description: `${evidence.facts.next_match} The fixture is part of the upcoming schedule and has not been treated as a result.`, factIds: ["next_match"] });
-  if (!stories.length || evidence.topScorers.length) stories.push({ storyType: "STAT_FACT", headline: evidence.topScorers.length ? `${evidence.topScorers[0].name} sets the early scoring pace` : "The league is waiting for its first confirmed goals", description: `${evidence.facts.top_scorer} ${evidence.facts.leader}`, factIds: ["top_scorer", "leader"] });
-  return stories.slice(0, 3);
+  if (evidence.topScorers.length || evidence.teamPerformance.length) stories.push({ storyType: "STAT_FACT", headline: evidence.topScorers.length ? `${evidence.topScorers[0].name} sets the early scoring pace` : "The league is building its scoring picture", description: `${evidence.facts.top_scorer} ${evidence.facts.leader}`, factIds: ["top_scorer", "leader"] });
+  return completeStoryCoverage(stories, evidence);
+}
+
+function completeStoryCoverage(stories: GeneratedStory[], evidence: Evidence): GeneratedStory[] {
+  const unique: GeneratedStory[] = [];
+  const seen = new Set<NewsStoryType>();
+  for (const story of stories) {
+    if (!seen.has(story.storyType)) {
+      seen.add(story.storyType);
+      unique.push(story);
+    }
+  }
+  if (evidence.latestResults.length && !seen.has("MATCHDAY_RECAP")) unique.push({ storyType: "MATCHDAY_RECAP", headline: `Latest results reshape ${evidence.seasonName}`, description: `${evidence.facts.latest_result} ${evidence.facts.confirmed_matches}`, factIds: ["latest_result", "confirmed_matches"] });
+  if (evidence.upcomingMatches.length && !seen.has("UPCOMING_PREVIEW")) unique.push({ storyType: "UPCOMING_PREVIEW", headline: `Next up: ${evidence.upcomingMatches[0].home} meet ${evidence.upcomingMatches[0].away}`, description: `${evidence.facts.next_match} This is a scheduled fixture, not a completed result.`, factIds: ["next_match"] });
+  if (evidence.teamPerformance.length && !seen.has("STAT_FACT")) unique.push({ storyType: "STAT_FACT", headline: evidence.topScorers.length ? `${evidence.topScorers[0].name} sets the early scoring pace` : "The league is building its scoring picture", description: `${evidence.facts.top_scorer} ${evidence.facts.leader}`, factIds: ["top_scorer", "leader"] });
+  return unique.slice(0, 3);
 }
 
 async function aiStories(evidence: Evidence): Promise<GeneratedStory[]> {
@@ -177,7 +192,7 @@ async function aiStories(evidence: Evidence): Promise<GeneratedStory[]> {
       if (!["MATCHDAY_RECAP", "UPCOMING_PREVIEW", "STAT_FACT"].includes(storyType) || !factIds.length) return null;
       return { storyType, headline: clip(item.headline, 180), description: clip(item.description, 900), factIds };
     }).filter((story): story is GeneratedStory => Boolean(story && story.headline && story.description)) : [];
-    return stories.length ? stories.slice(0, 3) : fallbackStories(evidence);
+    return stories.length ? completeStoryCoverage(stories, evidence) : fallbackStories(evidence);
   } catch { return fallbackStories(evidence); } finally { clearTimeout(timeout); }
 }
 
