@@ -20,6 +20,8 @@ import {
   Flag,
   LayoutDashboard,
   Menu,
+  Newspaper,
+  Archive,
   Trash2,
   Plus,
   Pencil,
@@ -61,7 +63,9 @@ import {
   type Activity as LeagueActivity,
   type Goal,
   type LeagueDatabase,
+  type LeagueNewsStory,
   type Match,
+  type SeasonArchive,
   type PlayerStat,
   type Standing,
   type Team,
@@ -69,7 +73,7 @@ import {
   type TiebreakerRule,
   type UserAccount,
 } from "@/lib/league-db";
-import { backendAnalyzeScorerReviews, backendApproveScorerReview, backendApproveTeam, backendConfirmResult, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendLogin, backendLogout, backendMe, backendRegister, backendRejectScorerReview, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, backendUpdateTeam, mergeBackendDashboard, toLocalUser, type BackendScorerReview } from "@/lib/backend-api";
+import { backendAnalyzeScorerReviews, backendApproveScorerReview, backendApproveTeam, backendCompleteSeason, backendConfirmResult, backendCreateSeason, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendLogin, backendLogout, backendMe, backendRefreshNews, backendRegister, backendRejectScorerReview, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, backendUpdateTeam, mergeBackendDashboard, toLocalUser, type BackendScorerReview } from "@/lib/backend-api";
 
 type View = "overview" | "fixtures" | "teams" | "table" | "database" | "rules";
 type ResultInput = { id: string; teamId: string; playerName: string; playerEmail?: string; minute: string };
@@ -186,19 +190,20 @@ function StandingTable({ standings, compact = false }: { standings: Standing[]; 
   );
 }
 
-function ActivityFeed({ activities }: { activities: LeagueActivity[] }) {
-  return (
-    <div className="activity-feed">
-      {!activities.length && <p className="muted-copy">No database activity yet. Confirmed results and admin actions will appear here.</p>}
-      {activities.map((activity) => (
-        <article className="activity-item" key={activity.id}>
-          <span className={`activity-icon activity-${activity.kind}`}>{activity.kind === "result" ? <ClipboardList size={15} /> : activity.kind === "leaderboard" ? <Trophy size={15} /> : <Sparkles size={15} />}</span>
-          <div><strong>{activity.title}</strong><p>{activity.detail}</p></div>
-          <time>{activity.time}</time>
-        </article>
-      ))}
-    </div>
-  );
+function ActivityFeed({ activities, news }: { activities: LeagueActivity[]; news: LeagueNewsStory[] }) {
+  if (news.length) return <div className="activity-feed">{news.slice(0, 4).map((story) => <article className="activity-item activity-news" key={story.id}><span className="activity-icon"><Newspaper size={15} /></span><div><strong>{story.headline}</strong><p>{story.description}</p></div><time>{story.storyDate}</time></article>)}</div>;
+  return <div className="activity-feed"><p className="muted-copy">No AI news yet. Confirmed results and upcoming fixtures will become newsroom stories after the daily refresh.</p>{activities.map((activity) => <article className="activity-item" key={activity.id}><span className={`activity-icon activity-${activity.kind}`}>{activity.kind === "result" ? <ClipboardList size={15} /> : activity.kind === "leaderboard" ? <Trophy size={15} /> : <Sparkles size={15} />}</span><div><strong>{activity.title}</strong><p>{activity.detail}</p></div><time>{activity.time}</time></article>)}</div>;
+}
+
+function newsTable(story: LeagueNewsStory) {
+  const columns = Array.isArray(story.data?.columns) ? story.data.columns.map(String) : [];
+  const rows = Array.isArray(story.data?.rows) ? story.data.rows.filter((row): row is unknown[] => Array.isArray(row)) : [];
+  return columns.length && rows.length ? { columns, rows } : null;
+}
+
+function NewsroomPanel({ news, archives, isAdmin, seasonStatus, seasonReady, onRefresh, onArchive, onCreateSeason, busy }: { news: LeagueNewsStory[]; archives: SeasonArchive[]; isAdmin: boolean; seasonStatus: string; seasonReady: boolean; onRefresh: () => void; onArchive: () => void; onCreateSeason: () => void; busy: boolean }) {
+  const stories = news.slice(0, 8);
+  return <section className="panel newsroom-panel"><div className="panel-header"><div><p className="eyebrow">eLEAGUE NEWSROOM</p><h2>Stories from the touchline</h2><p className="section-caption">AI-written reports use confirmed results, verified tables, and scheduled fixtures only. No unsupported events are added.</p></div><Newspaper size={18} className="panel-icon" /></div>{isAdmin && <div className="newsroom-actions"><Button onClick={onRefresh} disabled={busy}><RefreshCw size={14} /> {busy ? "Updating…" : "Refresh newsroom"}</Button><Button variant="outline" onClick={onArchive} disabled={busy || !seasonStatus || !seasonReady} title={!seasonReady ? "Confirm every fixture before archiving the season" : "Preserve this season and publish its summary"}><Archive size={14} /> {seasonReady ? "Archive season" : "Archive after final result"}</Button>{seasonStatus === "COMPLETED" && <Button variant="outline" onClick={onCreateSeason} disabled={busy}><Plus size={14} /> Create next season</Button>}</div>}<div className="news-story-list">{!stories.length && <div className="news-empty"><Newspaper size={22} /><strong>The newsroom is waiting for its first confirmed story.</strong><span>Daily matchday reports will appear here once the schedule and results provide evidence.</span></div>}{stories.map((story) => { const table = newsTable(story); return <article className="news-story-card" key={story.id}><div className="news-story-meta"><span className={`news-story-type news-${story.storyType.toLowerCase()}`}>{story.storyType.replaceAll("_", " ")}</span><time>{story.storyDate}</time></div><h3>{story.headline}</h3><p>{story.description}</p>{table && <div className="news-data-table"><table><thead><tr>{table.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{table.rows.slice(0, 6).map((row, index) => <tr key={`${story.id}-${index}`}>{table.columns.map((_, columnIndex) => <td key={`${story.id}-${index}-${columnIndex}`}>{String(row[columnIndex] ?? "—")}</td>)}</tr>)}</tbody></table></div>}<small className="news-story-source">Evidence date: {story.storyDate} · {story.model === "evidence-only-fallback" ? "Verified data fallback" : "Hugging Face editorial draft"}</small></article>; })}</div>{archives.length > 0 && <div className="season-archive-block"><div className="section-subheading"><div><p className="eyebrow">SEASON ARCHIVE</p><h3>Previous campaigns, preserved</h3></div><Archive size={17} /></div><div className="season-archive-list">{archives.slice(0, 5).map((archive) => <article className="season-archive-card" key={archive.id}><div><strong>{archive.seasonName}</strong><small>Completed {archive.completedAt.slice(0, 10)}</small></div><div className="archive-stat"><b>{archive.standings[0]?.name ? String(archive.standings[0].name) : "—"}</b><small>champion / table leader</small></div><div className="archive-stat"><b>{archive.playerStats[0]?.name ? String(archive.playerStats[0].name) : "—"}</b><small>top scorer</small></div></article>)}</div></div>}</section>;
 }
 
 function LoginPanel({ database, onLogin, useBackend }: { database: LeagueDatabase; onLogin: (user: UserAccount) => void; useBackend: boolean }) {
@@ -412,6 +417,7 @@ export default function Home() {
   const [searchTerm, setSearchTerm] = useState("");
   const [scorerReviews, setScorerReviews] = useState<BackendScorerReview[]>([]);
   const [scorerReviewBusy, setScorerReviewBusy] = useState(false);
+  const [newsBusy, setNewsBusy] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
 
   const useBackend = backendEnabled();
@@ -496,6 +502,45 @@ export default function Home() {
     const snapshot = await backendDashboard();
     setDatabase((current) => mergeBackendDashboard(current, snapshot));
     setScorerReviews(snapshot.scorerReviews || []);
+  }
+
+  async function refreshNewsroom() {
+    if (!isAdmin || !useBackend) return;
+    setNewsBusy(true);
+    try {
+      const result = await backendRefreshNews();
+      await refreshRemoteDashboard();
+      toast.success("Newsroom updated", { description: `${result.generated} evidence-backed story${result.generated === 1 ? "" : "ies"} are ready for the league.` });
+    } catch (error) {
+      toast.error("Newsroom refresh failed", { description: error instanceof Error ? error.message : "Try again shortly." });
+    } finally { setNewsBusy(false); }
+  }
+
+  async function archiveSeason() {
+    if (!isAdmin || !useBackend) return;
+    setNewsBusy(true);
+    try {
+      await backendCompleteSeason(database.league.id);
+      await refreshRemoteDashboard();
+      toast.success("Season archived", { description: "The standings, player statistics, team records, and newsroom facts are preserved for future seasons." });
+    } catch (error) {
+      toast.error("Season archive failed", { description: error instanceof Error ? error.message : "Finish and confirm every fixture first." });
+    } finally { setNewsBusy(false); }
+  }
+
+  async function createNextSeason() {
+    if (!isAdmin || !useBackend || database.league.status !== "COMPLETED") return;
+    const suggestedName = `${database.league.name} · Season 2`;
+    const name = window.prompt("Name the next league season", suggestedName)?.trim();
+    if (!name) return;
+    setNewsBusy(true);
+    try {
+      await backendCreateSeason(name);
+      await refreshRemoteDashboard();
+      toast.success("New season created", { description: `${name} is ready as a draft. Approve teams, then start its schedule.` });
+    } catch (error) {
+      toast.error("New season could not be created", { description: error instanceof Error ? error.message : "Try again shortly." });
+    } finally { setNewsBusy(false); }
   }
 
   async function analyzeScorerReviews() {
@@ -764,6 +809,7 @@ export default function Home() {
 
   const approvedTeamCount = database.teams.filter((team) => team.approvalStatus === "APPROVED").length;
   const tournamentStarted = database.matches.length > 0;
+  const seasonReadyToArchive = tournamentStarted && database.matches.every((match) => match.status === "CONFIRMED");
   const currentTitle = activeView === "overview" ? `Good afternoon, ${user?.name.split(" ")[0] ?? "there"}` : activeView === "fixtures" ? "Fixtures & results" : activeView === "teams" ? "Teams & managers" : activeView === "table" ? "Live league table" : activeView === "database" ? "Database & access" : "Rules & tie-breakers";
   const currentDescription = activeView === "overview" ? "Keep the league moving with one clear place for every result, roster, and ranking." : activeView === "fixtures" ? "Every scheduled match, submission, and confirmation in one calm workflow." : activeView === "teams" ? "Manage the clubs and eFootball accounts that power this season." : activeView === "table" ? "Official standings calculated from confirmed match results." : activeView === "database" ? "Manage identity, role permissions, and the records behind this competition." : "Automated rules keep tied teams ordered without manual spreadsheet work.";
 
@@ -798,8 +844,9 @@ export default function Home() {
           {activeView === "overview" && <>
             <div className="hero-grid"><section className="hero-card"><div className="hero-copy"><span className="hero-kicker"><span className="hero-live-dot" /> Matchday {database.matches[0]?.matchday ?? 1} in progress</span><h2>Keep the league<br /><em>moving forward.</em></h2><p>{pendingCount ? `${pendingCount} result is waiting for confirmation. Keep the official table clean with one quick review.` : "All results are up to date. The next fixture is ready when your players are."}</p><div className="hero-actions"><Button onClick={() => openResult()}>{pendingCount ? "Review pending result" : "Enter next result"} <ArrowRight size={15} /></Button><button className="hero-text-action" onClick={() => setActiveView("fixtures")}>Open match centre <ArrowRight size={14} /></button></div></div><div className="pitch-art" aria-hidden="true"><div className="pitch-line pitch-midline" /><div className="pitch-circle" /><div className="pitch-box pitch-box-top" /><div className="pitch-box pitch-box-bottom" /><span className="pitch-player player-one" /><span className="pitch-player player-two" /><span className="pitch-player player-three" /><span className="pitch-player player-four" /></div></section><aside className="attention-card"><div className="attention-top"><span className="eyebrow">NEEDS YOUR ATTENTION</span><span className="attention-icon"><Bell size={16} /></span></div><strong>{pendingCount ? "One result is waiting" : "No reviews waiting"}</strong><p>{pendingMatch ? `${teamById(database.teams, pendingMatch.homeTeamId)?.name} submitted a ${pendingMatch.homeScore}–${pendingMatch.awayScore} result against ${teamById(database.teams, pendingMatch.awayTeamId)?.name}.` : "Your league is clear. New submissions will appear here."}</p>{pendingMatch && isAdmin ? <button onClick={() => confirmMatch(pendingMatch.id)}>Confirm result <Check size={15} /></button> : <span className="attention-clear"><ShieldCheck size={15} />{pendingMatch ? "Awaiting admin review" : "Everything is up to date"}</span>}</aside></div>
             <div className="metric-grid"><MetricCard label="Confirmed matches" value={`${confirmedCount} / ${database.matches.length}`} note={`${database.matches.length ? Math.round((confirmedCount / database.matches.length) * 100) : 0}% of the season complete`} accent="#9dd36a" icon={Check} /><MetricCard label="Pending confirmation" value={String(pendingCount).padStart(2, "0")} note="Review before the table updates" accent="#f0b35b" icon={Clock3} /><MetricCard label="Teams competing" value={String(database.teams.length).padStart(2, "0")} note="All manager records are assigned" accent="#79b9f2" icon={Users} /><MetricCard label="Database health" value="100%" note="No duplicate or missing records" accent="#bf9cf3" icon={Database} /></div>
-            <div className="dashboard-grid"><section className="panel standings-panel"><div className="panel-header"><div><p className="eyebrow">01 / OFFICIAL TABLE</p><h2>Standings</h2></div><button className="panel-link" onClick={() => setActiveView("table")}>Full table <ArrowRight size={14} /></button></div><StandingTable standings={standings} compact /></section><section className="panel activity-panel"><div className="panel-header"><div><p className="eyebrow">02 / LIVE FEED</p><h2>Recent activity</h2></div><Activity size={18} className="panel-icon" /></div><ActivityFeed activities={database.activities} /></section></div>
+            <div className="dashboard-grid"><section className="panel standings-panel"><div className="panel-header"><div><p className="eyebrow">01 / OFFICIAL TABLE</p><h2>Standings</h2></div><button className="panel-link" onClick={() => setActiveView("table")}>Full table <ArrowRight size={14} /></button></div><StandingTable standings={standings} compact /></section><section className="panel activity-panel"><div className="panel-header"><div><p className="eyebrow">02 / LIVE FEED</p><h2>Recent activity</h2></div><Activity size={18} className="panel-icon" /></div><ActivityFeed activities={database.activities} news={database.news || []} /></section></div>
             <TeamPerformancePanel performance={teamPerformance} />
+            <NewsroomPanel news={database.news || []} archives={database.seasonArchives || []} isAdmin={Boolean(isAdmin)} seasonStatus={database.league.status} seasonReady={seasonReadyToArchive} onRefresh={refreshNewsroom} onArchive={archiveSeason} onCreateSeason={createNextSeason} busy={newsBusy} />
             <section className="panel next-fixtures-panel"><div className="panel-header"><div><p className="eyebrow">03 / NEXT UP</p><h2>Fixture desk</h2></div><button className="panel-link" onClick={() => setActiveView("fixtures")}>See all {database.matches.length} fixtures <ArrowRight size={14} /></button></div><div className="next-fixtures-list">{database.matches.filter((match) => match.status !== "CONFIRMED").slice(0, 3).map((match) => <MatchRow key={match.id} database={database} match={match} user={user} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</div></section>
           </>}
 

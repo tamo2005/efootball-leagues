@@ -103,14 +103,50 @@ export type BackendDashboard = {
   standings: Array<Record<string, unknown>>;
   stats: Array<{ player_email: string | null; scorer_name: string; team_id: number; team_name: string; goals: number }>;
   scorerReviews: BackendScorerReview[];
+  news: Array<{ id: number; season_id: number | null; story_date: string; story_type: string; headline: string; description: string; data_json: unknown; evidence_json: unknown; model: string | null; generated_at: number }>;
+  seasonArchives: Array<{ id: number; season_id: number; season_name: string; completed_at: number; standings_json: unknown; player_stats_json: unknown; team_performance_json: unknown; highlights_json: unknown }>;
 };
 
 export function backendDashboard() {
   return request<BackendDashboard>("/api/dashboard");
 }
 
+export function backendRefreshNews() {
+  return request<{ generated: number; stories: BackendDashboard["news"] }>("/api/news/refresh", { method: "POST" });
+}
+
+export function backendCompleteSeason(seasonId: string) {
+  return request<{ seasonId: string; status: string; archived: boolean }>(`/api/admin/seasons/${seasonId}/complete`, { method: "POST" });
+}
+
+export function backendCreateSeason(name: string) {
+  return request<{ id: number }>("/api/admin/seasons", { method: "POST", body: JSON.stringify({ name }) });
+}
+
 import { matchDateKey } from "./league-db";
-import type { Goal, LeagueDatabase, Match } from "./league-db";
+import type { Goal, LeagueDatabase, LeagueNewsStory, Match, SeasonArchive } from "./league-db";
+
+function jsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+    } catch { return undefined; }
+  }
+  return undefined;
+}
+
+function jsonArray(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
+    } catch { return []; }
+  }
+  return [];
+}
 
 export function mergeBackendDashboard(current: LeagueDatabase, snapshot: BackendDashboard): LeagueDatabase {
   const teams = snapshot.teams.map((team) => ({
@@ -162,6 +198,28 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
     users,
     matches,
     activities: [],
+    news: snapshot.news.map((story): LeagueNewsStory => ({
+      id: String(story.id),
+      seasonId: story.season_id === null ? undefined : String(story.season_id),
+      storyDate: story.story_date,
+      storyType: story.story_type as LeagueNewsStory["storyType"],
+      headline: story.headline,
+      description: story.description,
+      data: jsonObject(story.data_json),
+      evidence: jsonObject(story.evidence_json),
+      model: story.model || undefined,
+      generatedAt: new Date(Number(story.generated_at)).toISOString(),
+    })),
+    seasonArchives: snapshot.seasonArchives.map((archive): SeasonArchive => ({
+      id: String(archive.id),
+      seasonId: String(archive.season_id),
+      seasonName: archive.season_name,
+      completedAt: new Date(Number(archive.completed_at)).toISOString(),
+      standings: jsonArray(archive.standings_json),
+      playerStats: jsonArray(archive.player_stats_json),
+      teamPerformance: jsonArray(archive.team_performance_json),
+      highlights: jsonArray(archive.highlights_json),
+    })),
   };
 }
 

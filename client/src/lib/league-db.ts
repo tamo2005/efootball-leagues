@@ -66,12 +66,38 @@ export type Activity = {
   time: string;
 };
 
+export type LeagueNewsStory = {
+  id: string;
+  seasonId?: string;
+  storyDate: string;
+  storyType: "MATCHDAY_RECAP" | "UPCOMING_PREVIEW" | "STAT_FACT" | "SEASON_SUMMARY";
+  headline: string;
+  description: string;
+  data?: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
+  model?: string;
+  generatedAt: string;
+};
+
+export type SeasonArchive = {
+  id: string;
+  seasonId: string;
+  seasonName: string;
+  completedAt: string;
+  standings: Array<Record<string, unknown>>;
+  playerStats: Array<Record<string, unknown>>;
+  teamPerformance: Array<Record<string, unknown>>;
+  highlights: Array<Record<string, unknown>>;
+};
+
 export type LeagueDatabase = {
   league: League;
   teams: Team[];
   users: UserAccount[];
   matches: Match[];
   activities: Activity[];
+  news?: LeagueNewsStory[];
+  seasonArchives?: SeasonArchive[];
   currentUserId: string | null;
   tiebreakers: TiebreakerRule[];
 };

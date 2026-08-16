@@ -143,3 +143,37 @@ CREATE TABLE IF NOT EXISTS scorer_name_reviews (
   CONSTRAINT scorer_reviews_team_fk FOREIGN KEY (team_id) REFERENCES teams(id),
   CONSTRAINT scorer_reviews_matched_user_fk FOREIGN KEY (matched_email) REFERENCES users(email) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS league_news (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  season_id BIGINT UNSIGNED NULL,
+  story_date VARCHAR(10) NOT NULL,
+  story_type ENUM('MATCHDAY_RECAP', 'UPCOMING_PREVIEW', 'STAT_FACT', 'SEASON_SUMMARY') NOT NULL,
+  story_key VARCHAR(160) NOT NULL,
+  headline VARCHAR(180) NOT NULL,
+  description TEXT NOT NULL,
+  data_json JSON NULL,
+  evidence_json JSON NOT NULL,
+  evidence_signature CHAR(64) NOT NULL,
+  model VARCHAR(160) NULL,
+  generated_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE KEY league_news_cycle_uq (season_id, story_date, story_type),
+  INDEX league_news_season_idx (season_id, generated_at),
+  CONSTRAINT league_news_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS season_archives (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  season_id BIGINT UNSIGNED NOT NULL,
+  season_name VARCHAR(120) NOT NULL,
+  completed_at BIGINT NOT NULL,
+  standings_json JSON NOT NULL,
+  player_stats_json JSON NOT NULL,
+  team_performance_json JSON NOT NULL,
+  highlights_json JSON NOT NULL,
+  UNIQUE KEY season_archives_season_uq (season_id),
+  INDEX season_archives_completed_idx (completed_at),
+  CONSTRAINT season_archives_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

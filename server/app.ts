@@ -5,6 +5,7 @@ import { OAuth2Client } from "google-auth-library";
 import { clearSession, createSession, findUserByEmail, getCurrentUser, hashPassword, verifyPassword, type CurrentUser } from "./auth";
 import { databaseHealth, isDatabaseConfigured, query, withTransaction } from "./db";
 import { assertScheduleIsCompatible, calculateStandings, generateRoundRobin } from "./league-service";
+import { archiveSeasonSnapshot, ensureNewsTables, getArchiveRows, getNewsRows, refreshLeagueNews } from "./news-service";
 
 const app = express();
 app.set("trust proxy", true);
@@ -549,9 +550,62 @@ const registerRoute = asyncRoute(async (request, response) => {
 app.post("/api/auth/register", registerRoute);
 app.post("/api/register", registerRoute);
 
+app.post("/api/news/refresh", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureNewsTables();
+  const seasonRows = await query<Array<{ id: number; status: string }>>("SELECT id, status FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
+  if (!seasonRows[0]) {
+    response.status(404).json({ error: "SEASON_NOT_FOUND", message: "Create a season before refreshing league news." });
+    return;
+  }
+  const result = await refreshLeagueNews(Number(seasonRows[0].id));
+  response.json(result);
+}));
+
+app.get("/api/cron/news", asyncRoute(async (request, response) => {
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  const authorization = request.headers.authorization;
+  if (cronSecret && authorization !== `Bearer ${cronSecret}`) {
+    response.status(401).json({ error: "UNAUTHORIZED_CRON", message: "The newsroom cron request is not authorized." });
+    return;
+  }
+  await ensureNewsTables();
+  const seasonRows = await query<Array<{ id: number; status: string }>>("SELECT id, status FROM seasons WHERE status IN ('ACTIVE', 'COMPLETED') ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
+  if (!seasonRows[0]) {
+    response.json({ skipped: true, reason: "NO_SEASON" });
+    return;
+  }
+  const seasonId = Number(seasonRows[0].id);
+  // The upsert is intentionally repeated once per day: a result may be confirmed
+  // after an earlier manual refresh on the same IST date.
+  const result = await refreshLeagueNews(seasonId);
+  response.json({ ...result, seasonId, storyDate: leagueDateKey() });
+}));
+
+app.post("/api/admin/seasons/:seasonId/complete", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const seasonId = Number(request.params.seasonId);
+  if (!Number.isInteger(seasonId) || seasonId <= 0) {
+    response.status(400).json({ error: "INVALID_SEASON_ID", message: "That season identifier is invalid." });
+    return;
+  }
+  const openRows = await query<Array<{ count: number }>>("SELECT COUNT(*) AS count FROM matches WHERE season_id = :seasonId AND status <> 'CONFIRMED'", { seasonId });
+  if (Number(openRows[0]?.count || 0) > 0) {
+    response.status(409).json({ error: "SEASON_NOT_FINISHED", message: "Every fixture must be officially confirmed before archiving the season." });
+    return;
+  }
+  const result = await archiveSeasonSnapshot(seasonId);
+  await query(`INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+    VALUES (:email, 'ARCHIVE_SEASON', 'season', :seasonId, JSON_OBJECT('archived', :archived), :now)`, { email: user.email, seasonId: String(seasonId), archived: result.archived ? 1 : 0, now: Date.now() });
+  response.json(result);
+}));
+
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
+  await ensureNewsTables();
   const seasonRows = await query<Array<{ id: number; name: string; status: string; matchday_count: number; current_matchday: number }>>("SELECT id, name, status, matchday_count, current_matchday FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
   const season = seasonRows[0] || null;
   const teams = await query<Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string; status: string; created_by_email: string | null }>>("SELECT id, name, short_code, manager_name, accent, status, created_by_email FROM teams ORDER BY name");
@@ -592,6 +646,8 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       ORDER BY goals DESC, g.scorer_name`,
   );
   const scorerReviews = user.role === "admin" ? (await backfillScorerReviewRecords(), await scorerReviewRows()) : [];
+  const news = await getNewsRows();
+  const seasonArchives = await getArchiveRows();
   response.json({
     season,
     teams,
@@ -601,6 +657,8 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
     standings: calculateStandings(teams.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code })), confirmedMatches.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: Number(match.home_score), awayScore: Number(match.away_score) }))),
     stats,
     scorerReviews,
+    news,
+    seasonArchives,
   });
 }));
 

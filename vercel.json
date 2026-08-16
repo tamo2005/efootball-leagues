@@ -3,6 +3,9 @@
   "outputDirectory": "dist/public",
   "installCommand": "pnpm install",
   "framework": "vite",
+  "crons": [
+    { "path": "/api/cron/news", "schedule": "0 17 * * *" }
+  ],
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api" }
   ],

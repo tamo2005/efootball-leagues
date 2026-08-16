@@ -1238,3 +1238,192 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
     text-align: left;
   }
 }
+
+
+/* Evidence-first football newsroom */
+.newsroom-panel {
+  margin-top: 18px;
+  background: linear-gradient(135deg, #fffdf8 0%, #fbf4eb 100%);
+}
+.newsroom-panel .panel-header {
+  align-items: flex-start;
+}
+.newsroom-panel .section-caption {
+  max-width: 680px;
+}
+.newsroom-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 4px 0 16px;
+}
+.news-story-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.news-story-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #eadbca;
+  border-radius: 14px;
+  background: rgba(255,255,255,.72);
+  box-shadow: 0 8px 20px rgba(75, 34, 40, .04);
+}
+.news-story-card h3 {
+  margin: 10px 0 7px;
+  color: #2e1d2a;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 16px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.news-story-card p {
+  margin: 0;
+  color: #75636a;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.news-story-meta,
+.news-story-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #a58f8d;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.news-story-type {
+  display: inline-flex;
+  max-width: 75%;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: #f3e5d3;
+  color: #8b681c;
+  overflow-wrap: anywhere;
+}
+.news-matchday_recap { background: #f8dfdc; color: #9a2444; }
+.news-upcoming_preview { background: #e0edf5; color: #356783; }
+.news-stat_fact { background: #eee4fa; color: #6d4a8e; }
+.news-season_summary { background: #e8f0d8; color: #4d702e; }
+.news-data-table {
+  max-width: 100%;
+  margin-top: 13px;
+  overflow-x: auto;
+  border: 1px solid #eadbca;
+  border-radius: 10px;
+  background: #fffdf9;
+}
+.news-data-table table {
+  width: 100%;
+  min-width: 260px;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+.news-data-table th,
+.news-data-table td {
+  padding: 8px 9px;
+  border-bottom: 1px solid #f0e5da;
+  text-align: left;
+  white-space: nowrap;
+}
+.news-data-table th {
+  color: #8b681c;
+  font-size: 9px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.news-data-table td {
+  color: #4d3a43;
+  font-weight: 700;
+}
+.news-data-table tr:last-child td {
+  border-bottom: 0;
+}
+.news-story-source {
+  justify-content: flex-start;
+  margin-top: 12px;
+  color: #a58f8d;
+  font-size: 8px;
+  letter-spacing: .04em;
+  text-transform: none;
+}
+.news-empty {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px 10px;
+  padding: 20px;
+  border: 1px dashed #dbcbbd;
+  border-radius: 12px;
+  color: #8d7778;
+}
+.news-empty svg { grid-row: span 2; color: #a47a27; }
+.news-empty strong { color: #4a3340; font-size: 13px; }
+.news-empty span { font-size: 11px; }
+.season-archive-block {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #eadbca;
+}
+.section-subheading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+}
+.section-subheading h3 {
+  margin: 2px 0 0;
+  color: #352331;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 16px;
+}
+.section-subheading > svg { color: #a47a27; }
+.season-archive-list {
+  display: grid;
+  gap: 8px;
+}
+.season-archive-card {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.2fr) repeat(2, minmax(130px, 1fr));
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #eadbca;
+  border-radius: 11px;
+  background: rgba(255,255,255,.66);
+}
+.season-archive-card > div,
+.archive-stat { min-width: 0; }
+.season-archive-card strong,
+.archive-stat b {
+  display: block;
+  color: #4a3340;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.season-archive-card small,
+.archive-stat small {
+  display: block;
+  margin-top: 3px;
+  color: #9b8788;
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.activity-news .activity-icon { background: #f2e1bd; color: #8b681c; }
+.activity-news strong { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .news-story-list { grid-template-columns: 1fr; }
+  .season-archive-card { grid-template-columns: 1fr; gap: 8px; }
+}
+@media (max-width: 420px) {
+  .newsroom-actions > * { width: 100%; justify-content: center; }
+  .news-story-card { padding: 13px; }
+  .news-story-meta { align-items: flex-start; flex-direction: column; }
+}
