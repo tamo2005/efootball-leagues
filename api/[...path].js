@@ -272,12 +272,289 @@ function calculateStandings(teams, matches, tieBreakers = DEFAULT_TIEBREAKERS) {
   return rows.map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
+// server/news-service.ts
+import { createHash as createHash2 } from "node:crypto";
+var LEAGUE_TIME_ZONE = "Asia/Kolkata";
+var HUGGING_FACE_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
+var DEFAULT_HUGGING_FACE_MODEL = "Qwen/Qwen3-4B-Instruct-2507";
+function leagueDateKey(timestamp = Date.now()) {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: LEAGUE_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(timestamp));
+  const part = (type) => parts.find((entry) => entry.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+function json(value) {
+  return JSON.stringify(value ?? []);
+}
+function clip(value, limit) {
+  return String(value ?? "").trim().slice(0, limit);
+}
+function numeric(value) {
+  return Number(value || 0);
+}
+function parseObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function extractJson(value) {
+  const trimmed = value.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+  const direct = parseObject(trimmed);
+  if (direct) return direct;
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  return start >= 0 && end > start ? parseObject(trimmed.slice(start, end + 1)) : null;
+}
+function modelConfig() {
+  const token = process.env.HF_TOKEN?.trim();
+  return token ? { token, model: process.env.HF_MODEL?.trim() || DEFAULT_HUGGING_FACE_MODEL } : null;
+}
+var tablesReady = null;
+async function ensureNewsTables() {
+  if (!tablesReady) {
+    tablesReady = Promise.all([
+      query(`CREATE TABLE IF NOT EXISTS league_news (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        season_id BIGINT UNSIGNED NULL,
+        story_date VARCHAR(10) NOT NULL,
+        story_type ENUM('MATCHDAY_RECAP', 'UPCOMING_PREVIEW', 'STAT_FACT', 'SEASON_SUMMARY') NOT NULL,
+        story_key VARCHAR(160) NOT NULL,
+        headline VARCHAR(180) NOT NULL,
+        description TEXT NOT NULL,
+        data_json JSON NULL,
+        evidence_json JSON NOT NULL,
+        evidence_signature CHAR(64) NOT NULL,
+        model VARCHAR(160) NULL,
+        generated_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        UNIQUE KEY league_news_cycle_uq (season_id, story_date, story_type),
+        INDEX league_news_season_idx (season_id, generated_at),
+        CONSTRAINT league_news_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+      query(`CREATE TABLE IF NOT EXISTS season_archives (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        season_id BIGINT UNSIGNED NOT NULL,
+        season_name VARCHAR(120) NOT NULL,
+        completed_at BIGINT NOT NULL,
+        standings_json JSON NOT NULL,
+        player_stats_json JSON NOT NULL,
+        team_performance_json JSON NOT NULL,
+        highlights_json JSON NOT NULL,
+        UNIQUE KEY season_archives_season_uq (season_id),
+        INDEX season_archives_completed_idx (completed_at),
+        CONSTRAINT season_archives_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+    ]).then(() => void 0).catch((error) => {
+      tablesReady = null;
+      throw error;
+    });
+  }
+  await tablesReady;
+}
+async function buildEvidence(seasonId) {
+  const [seasonRows, teamRows, matchRows, goalRows, archiveRows] = await Promise.all([
+    query("SELECT id, name, status FROM seasons WHERE id = :seasonId LIMIT 1", { seasonId }),
+    query("SELECT id, name, short_code FROM teams WHERE status = 'APPROVED' ORDER BY id", {}),
+    query("SELECT id, matchday, kickoff_at, home_team_id, away_team_id, home_score, away_score, status FROM matches WHERE season_id = :seasonId ORDER BY kickoff_at, id", { seasonId }),
+    query("SELECT g.match_id, g.team_id, g.player_email, g.scorer_name, g.minute FROM goals g JOIN matches m ON m.id = g.match_id WHERE m.season_id = :seasonId AND m.status = 'CONFIRMED' ORDER BY m.kickoff_at DESC, g.minute", { seasonId }),
+    query("SELECT id, season_id, season_name, completed_at, standings_json FROM season_archives WHERE season_id <> :seasonId ORDER BY completed_at DESC LIMIT 5", { seasonId })
+  ]);
+  const season = seasonRows[0];
+  if (!season) throw new Error("Season not found.");
+  const teamById = new Map(teamRows.map((team) => [Number(team.id), team]));
+  const confirmedRows = matchRows.filter((match) => match.status === "CONFIRMED" && match.home_score !== null && match.away_score !== null);
+  const standings = calculateStandings(teamRows.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code })), confirmedRows.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: numeric(match.home_score), awayScore: numeric(match.away_score) })));
+  const teamPerformanceMap = /* @__PURE__ */ new Map();
+  for (const team of teamRows) teamPerformanceMap.set(Number(team.id), { teamId: Number(team.id), teamName: team.name, shortCode: team.short_code, goalsFor: 0, goalsAgainst: 0, matchesPlayed: 0, cleanSheets: 0 });
+  for (const match of confirmedRows) {
+    const home = teamPerformanceMap.get(Number(match.home_team_id));
+    const away = teamPerformanceMap.get(Number(match.away_team_id));
+    if (!home || !away) continue;
+    home.goalsFor = numeric(home.goalsFor) + numeric(match.home_score);
+    home.goalsAgainst = numeric(home.goalsAgainst) + numeric(match.away_score);
+    home.matchesPlayed = numeric(home.matchesPlayed) + 1;
+    if (numeric(match.away_score) === 0) home.cleanSheets = numeric(home.cleanSheets) + 1;
+    away.goalsFor = numeric(away.goalsFor) + numeric(match.away_score);
+    away.goalsAgainst = numeric(away.goalsAgainst) + numeric(match.home_score);
+    away.matchesPlayed = numeric(away.matchesPlayed) + 1;
+    if (numeric(match.home_score) === 0) away.cleanSheets = numeric(away.cleanSheets) + 1;
+  }
+  const teamPerformance = Array.from(teamPerformanceMap.values()).sort((a, b) => numeric(b.goalsFor) - numeric(a.goalsFor));
+  const scorerMap = /* @__PURE__ */ new Map();
+  for (const goal of goalRows) {
+    const key = `${goal.team_id}:${goal.player_email || goal.scorer_name.toLowerCase()}`;
+    const current = scorerMap.get(key) || { name: goal.scorer_name, playerEmail: goal.player_email, teamId: Number(goal.team_id), teamName: teamById.get(Number(goal.team_id))?.name || "Unknown team", goals: 0 };
+    current.goals = numeric(current.goals) + 1;
+    scorerMap.set(key, current);
+  }
+  const topScorers = Array.from(scorerMap.values()).sort((a, b) => numeric(b.goals) - numeric(a.goals)).slice(0, 8);
+  const latestResults = confirmedRows.slice(-6).reverse().map((match) => ({ matchday: Number(match.matchday), date: leagueDateKey(Number(match.kickoff_at)), home: teamById.get(Number(match.home_team_id))?.name, away: teamById.get(Number(match.away_team_id))?.name, score: `${numeric(match.home_score)}-${numeric(match.away_score)}` }));
+  const upcomingMatches = matchRows.filter((match) => match.status === "SCHEDULED" || match.status === "POSTPONED").slice(0, 6).map((match) => ({ matchday: Number(match.matchday), date: leagueDateKey(Number(match.kickoff_at)), kickoffAt: Number(match.kickoff_at), home: teamById.get(Number(match.home_team_id))?.name, away: teamById.get(Number(match.away_team_id))?.name }));
+  const leader = standings[0];
+  const topScorer = topScorers[0];
+  const cleanSheetLeader = [...teamPerformance].sort((a, b) => numeric(b.cleanSheets) - numeric(a.cleanSheets))[0];
+  const facts = {
+    confirmed_matches: `${confirmedRows.length} of ${matchRows.length} scheduled matches are confirmed.`,
+    leader: leader ? `${leader.name} leads the table with ${leader.points} points from ${leader.played} matches.` : "There is no confirmed standings leader yet.",
+    top_scorer: topScorer ? `${topScorer.name} leads the scoring chart with ${topScorer.goals} goals for ${topScorer.teamName}.` : "No confirmed goals have been recorded yet.",
+    clean_sheet_leader: cleanSheetLeader ? `${cleanSheetLeader.teamName} recorded ${cleanSheetLeader.cleanSheets} clean sheet${numeric(cleanSheetLeader.cleanSheets) === 1 ? "" : "s"} from ${cleanSheetLeader.matchesPlayed} confirmed matches.` : "No clean sheets are recorded yet.",
+    latest_result: latestResults[0] ? (() => {
+      const [homeScore, awayScore] = String(latestResults[0].score).split("-").map(Number);
+      const result = homeScore === awayScore ? `${latestResults[0].home} drew ${latestResults[0].away}` : homeScore > awayScore ? `${latestResults[0].home} beat ${latestResults[0].away}` : `${latestResults[0].away} beat ${latestResults[0].home}`;
+      return `${result} in the latest recorded scoreline ${latestResults[0].score}.`;
+    })() : "There is no confirmed result to recap yet.",
+    next_match: upcomingMatches[0] ? `The next listed fixture is ${upcomingMatches[0].home} versus ${upcomingMatches[0].away} on ${upcomingMatches[0].date}.` : "There is no upcoming fixture currently listed."
+  };
+  return { seasonId, seasonName: season.name, status: season.status, asOfDate: leagueDateKey(), confirmedMatches: confirmedRows.length, totalMatches: matchRows.length, standings: standings.slice(0, 8), topScorers, teamPerformance, latestResults, upcomingMatches, facts, previousSeasons: archiveRows.map((archive) => ({ seasonName: archive.season_name, completedAt: archive.completed_at, standings: parseObject(archive.standings_json) || archive.standings_json })) };
+}
+function fallbackStories(evidence) {
+  const stories = [];
+  if (evidence.latestResults.length) stories.push({ storyType: "MATCHDAY_RECAP", headline: `The latest matchday leaves ${evidence.seasonName} with more to watch`, description: `${evidence.facts.latest_result} The official table now has ${evidence.facts.confirmed_matches.toLowerCase()}`, factIds: ["latest_result", "confirmed_matches"] });
+  if (evidence.upcomingMatches.length) stories.push({ storyType: "UPCOMING_PREVIEW", headline: `Next up: ${evidence.upcomingMatches[0].home} meet ${evidence.upcomingMatches[0].away}`, description: `${evidence.facts.next_match} The fixture is part of the upcoming schedule and has not been treated as a result.`, factIds: ["next_match"] });
+  if (evidence.topScorers.length || evidence.teamPerformance.length) stories.push({ storyType: "STAT_FACT", headline: evidence.topScorers.length ? `${evidence.topScorers[0].name} sets the early scoring pace` : "The league is building its scoring picture", description: `${evidence.facts.top_scorer} ${evidence.facts.leader}`, factIds: ["top_scorer", "leader"] });
+  return completeStoryCoverage(stories, evidence);
+}
+function completeStoryCoverage(stories, evidence) {
+  const unique = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const story of stories) {
+    if (!seen.has(story.storyType)) {
+      seen.add(story.storyType);
+      unique.push(story);
+    }
+  }
+  if (evidence.latestResults.length && !seen.has("MATCHDAY_RECAP")) unique.push({ storyType: "MATCHDAY_RECAP", headline: `Latest results reshape ${evidence.seasonName}`, description: `${evidence.facts.latest_result} ${evidence.facts.confirmed_matches}`, factIds: ["latest_result", "confirmed_matches"] });
+  if (evidence.upcomingMatches.length && !seen.has("UPCOMING_PREVIEW")) unique.push({ storyType: "UPCOMING_PREVIEW", headline: `Next up: ${evidence.upcomingMatches[0].home} meet ${evidence.upcomingMatches[0].away}`, description: `${evidence.facts.next_match} This is a scheduled fixture, not a completed result.`, factIds: ["next_match"] });
+  if (evidence.teamPerformance.length && !seen.has("STAT_FACT")) unique.push({ storyType: "STAT_FACT", headline: evidence.topScorers.length ? `${evidence.topScorers[0].name} sets the early scoring pace` : "The league is building its scoring picture", description: `${evidence.facts.top_scorer} ${evidence.facts.leader}`, factIds: ["top_scorer", "leader"] });
+  return unique.slice(0, 3);
+}
+async function aiStories(evidence) {
+  const config = modelConfig();
+  if (!config) return fallbackStories(evidence);
+  const prompt = [
+    "You are a careful football league news editor.",
+    "Use only the supplied evidence. Do not invent players, goals, scores, rivalries, streaks, transfers, emotions, or statistics.",
+    "Choose only factIds that exist in the evidence facts object. If the data is not interesting, say that plainly.",
+    'Return JSON only in this exact shape: {"stories":[{"storyType":"MATCHDAY_RECAP|UPCOMING_PREVIEW|STAT_FACT","headline":"...","description":"...","factIds":["..."]}]}.',
+    "Write concise sports-report copy. Upcoming fixtures must never be described as completed. Do not include a table; the server will attach a verified data table.",
+    JSON.stringify({ evidence, facts: evidence.facts })
+  ].join("\n\n");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6500);
+  try {
+    const response = await fetch(HUGGING_FACE_CHAT_URL, { method: "POST", headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "Return valid JSON only." }, { role: "user", content: prompt }], temperature: 0.2, max_tokens: 600 }), signal: controller.signal });
+    const payload = await response.json().catch(() => null);
+    const content = payload?.choices?.[0]?.message?.content;
+    const parsed = typeof content === "string" ? extractJson(content) : null;
+    const allowed = new Set(Object.keys(evidence.facts));
+    const stories = Array.isArray(parsed?.stories) ? parsed.stories.map((story) => {
+      const item = parseObject(story);
+      if (!item) return null;
+      const storyType = String(item.storyType || "");
+      const factIds = Array.isArray(item.factIds) ? item.factIds.map(String).filter((id) => allowed.has(id)) : [];
+      if (!["MATCHDAY_RECAP", "UPCOMING_PREVIEW", "STAT_FACT"].includes(storyType) || !factIds.length) return null;
+      return { storyType, headline: clip(item.headline, 180), description: clip(item.description, 900), factIds };
+    }).filter((story) => Boolean(story && story.headline && story.description)) : [];
+    return stories.length ? completeStoryCoverage(stories, evidence) : fallbackStories(evidence);
+  } catch {
+    return fallbackStories(evidence);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+function storyData(storyType, evidence) {
+  if (storyType === "MATCHDAY_RECAP") return { columns: ["Matchday", "Fixture", "Score"], rows: evidence.latestResults.map((match) => [match.matchday, `${match.home} vs ${match.away}`, match.score]) };
+  if (storyType === "UPCOMING_PREVIEW") return { columns: ["Matchday", "Date", "Fixture"], rows: evidence.upcomingMatches.map((match) => [match.matchday, match.date, `${match.home} vs ${match.away}`]) };
+  if (storyType === "SEASON_SUMMARY") return { columns: ["Rank", "Team", "Points", "Goals For"], rows: evidence.standings.map((row) => [row.rank, row.name, row.points, row.goalsFor]) };
+  return { columns: ["Team", "Goals For", "Clean Sheets"], rows: evidence.teamPerformance.slice(0, 5).map((row) => [row.teamName, row.goalsFor, row.cleanSheets]) };
+}
+async function refreshLeagueNews(seasonId) {
+  await ensureNewsTables();
+  const evidence = await buildEvidence(seasonId);
+  const generated = await aiStories(evidence);
+  if (evidence.status === "COMPLETED") generated.push({ storyType: "SEASON_SUMMARY", headline: `Season archive: ${evidence.seasonName}`, description: `${evidence.facts.leader} ${evidence.facts.top_scorer} ${evidence.facts.clean_sheet_leader}`, factIds: ["leader", "top_scorer", "clean_sheet_leader"] });
+  const now = Date.now();
+  const model = modelConfig()?.model || "evidence-only-fallback";
+  for (const story of generated) {
+    const evidenceJson = json({ facts: Object.fromEntries(story.factIds.map((id) => [id, evidence.facts[id]])), asOfDate: evidence.asOfDate, confirmedMatches: evidence.confirmedMatches, totalMatches: evidence.totalMatches });
+    const dataJson = json(storyData(story.storyType, evidence));
+    const signature = createHash2("sha256").update(`${evidenceJson}:${dataJson}`).digest("hex");
+    await query(`INSERT INTO league_news (season_id, story_date, story_type, story_key, headline, description, data_json, evidence_json, evidence_signature, model, generated_at, updated_at)
+      VALUES (:seasonId, :storyDate, :storyType, :storyKey, :headline, :description, :dataJson, :evidenceJson, :signature, :model, :now, :now)
+      ON DUPLICATE KEY UPDATE headline = VALUES(headline), description = VALUES(description), data_json = VALUES(data_json), evidence_json = VALUES(evidence_json), evidence_signature = VALUES(evidence_signature), model = VALUES(model), generated_at = VALUES(generated_at), updated_at = VALUES(updated_at)`, { seasonId, storyDate: evidence.asOfDate, storyType: story.storyType, storyKey: `${seasonId}:${evidence.asOfDate}:${story.storyType}`, headline: story.headline, description: story.description, dataJson, evidenceJson, signature, model, now });
+  }
+  return { generated: generated.length, stories: await getNewsRows() };
+}
+async function getNewsRows() {
+  await ensureNewsTables();
+  return query("SELECT id, season_id, story_date, story_type, headline, description, data_json, evidence_json, model, generated_at FROM league_news ORDER BY generated_at DESC, id DESC LIMIT 50", {});
+}
+async function getArchiveRows() {
+  await ensureNewsTables();
+  return query("SELECT id, season_id, season_name, completed_at, standings_json, player_stats_json, team_performance_json, highlights_json FROM season_archives ORDER BY completed_at DESC LIMIT 20", {});
+}
+async function archiveSeasonSnapshot(seasonId) {
+  await ensureNewsTables();
+  const evidence = await buildEvidence(seasonId);
+  const existing = await query("SELECT id FROM season_archives WHERE season_id = :seasonId LIMIT 1", { seasonId });
+  if (!existing[0]) {
+    const highlights = Object.entries(evidence.facts).map(([key, value]) => ({ key, value }));
+    const playerStats = evidence.topScorers;
+    await query(`INSERT INTO season_archives (season_id, season_name, completed_at, standings_json, player_stats_json, team_performance_json, highlights_json)
+      VALUES (:seasonId, :seasonName, :completedAt, :standings, :playerStats, :teamPerformance, :highlights)`, { seasonId, seasonName: evidence.seasonName, completedAt: Date.now(), standings: json(evidence.standings), playerStats: json(playerStats), teamPerformance: json(evidence.teamPerformance), highlights: json(highlights) });
+  }
+  await query("UPDATE seasons SET status = 'COMPLETED', updated_at = :now WHERE id = :seasonId", { seasonId, now: Date.now() });
+  await refreshLeagueNews(seasonId);
+  return { archived: !existing[0], seasonId, status: "COMPLETED" };
+}
+
 // server/app.ts
 var app = express();
 app.set("trust proxy", true);
 app.use(express.json({ limit: "1mb" }));
 var GOOGLE_STATE_COOKIE = "eleague_google_state";
 var GOOGLE_STATE_TTL_MS = 10 * 60 * 1e3;
+var LEAGUE_TIME_ZONE2 = "Asia/Kolkata";
+function leagueDateKey2(timestamp = Date.now()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: LEAGUE_TIME_ZONE2,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(timestamp));
+  const part = (type) => parts.find((entry) => entry.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+function formatLeagueDateLabel(dateKey) {
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: LEAGUE_TIME_ZONE2,
+    weekday: "long",
+    day: "numeric",
+    month: "long"
+  }).format(/* @__PURE__ */ new Date(`${dateKey}T12:00:00Z`));
+}
+function attachMatchdayDates(matches) {
+  const anchors = /* @__PURE__ */ new Map();
+  for (const match of matches) {
+    const matchday = Number(match.matchday);
+    const hasOriginal = match.original_kickoff_at !== null && match.original_kickoff_at !== void 0;
+    const candidate = Number(match.kickoff_at);
+    if (hasOriginal || !Number.isInteger(matchday) || !Number.isFinite(candidate)) continue;
+    const current = anchors.get(matchday);
+    if (current === void 0 || candidate < current) anchors.set(matchday, candidate);
+  }
+  return matches.map((match) => {
+    const matchday = Number(match.matchday);
+    const hasOriginal = match.original_kickoff_at !== null && match.original_kickoff_at !== void 0;
+    const kickoff = Number(match.kickoff_at);
+    const candidate = hasOriginal ? kickoff : anchors.get(matchday) ?? kickoff;
+    return { ...match, match_date: Number.isFinite(candidate) ? leagueDateKey2(candidate) : "" };
+  });
+}
 function cookieValue(request, name) {
   const cookies = Object.fromEntries((request.headers.cookie || "").split(";").map((part) => part.trim().split("=")).filter(([key, value]) => key && value).map(([key, ...value]) => [key, decodeURIComponent(value.join("="))]));
   return cookies[name] || null;
@@ -312,12 +589,31 @@ function duplicateTeamError(error) {
   }
   return new ApiError(409, "TEAM_IN_USE", "That team name or team code already exists. Choose different values.");
 }
-var HUGGING_FACE_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-var DEFAULT_HUGGING_FACE_MODEL = "Qwen/Qwen3-4B-Instruct-2507";
+var HUGGING_FACE_CHAT_URL2 = "https://router.huggingface.co/v1/chat/completions";
+var DEFAULT_HUGGING_FACE_MODEL2 = "Qwen/Qwen3-4B-Instruct-2507";
+var MANUAL_FOOTBALLER_NAME_FALLBACKS = {
+  "gulit": "Ruud Gullit",
+  "gullit": "Ruud Gullit",
+  "del piero": "Alessandro Del Piero",
+  "van basten": "Marco van Basten",
+  "luis suarez": "Luis Su\xE1rez",
+  "zlatan": "Zlatan Ibrahimovi\u0107",
+  "zlatan ibrahimovic": "Zlatan Ibrahimovi\u0107",
+  "zlatan ibrahimovi\u0107": "Zlatan Ibrahimovi\u0107",
+  "messi": "Lionel Messi",
+  "neymar": "Neymar da Silva Santos J\xFAnior",
+  "pele": "Edson Arantes do Nascimento",
+  "pel\xE9": "Edson Arantes do Nascimento",
+  "maradona": "Diego Armando Maradona",
+  "neuer": "Manuel Neuer",
+  "gerrard": "Steven Gerrard",
+  "cr7": "Cristiano Ronaldo",
+  "cristiano": "Cristiano Ronaldo"
+};
 function huggingFaceConfig() {
   const token = process.env.HF_TOKEN?.trim();
   if (!token) return null;
-  return { token, model: process.env.HF_MODEL?.trim() || DEFAULT_HUGGING_FACE_MODEL };
+  return { token, model: process.env.HF_MODEL?.trim() || DEFAULT_HUGGING_FACE_MODEL2 };
 }
 var scorerReviewTableReady = null;
 async function ensureScorerReviewTable() {
@@ -369,7 +665,9 @@ function parseScorerReview(raw, submittedName, knownPlayers) {
   const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
   if (!jsonText) throw new Error("The name-review model did not return JSON.");
   const parsed = JSON.parse(jsonText);
-  const suggestedFullName = clipText(String(parsed.suggestedFullName || parsed.suggestedName || submittedName), 120);
+  const conservativeAlias = MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(submittedName)];
+  const modelSuggestion = String(parsed.suggestedFullName || parsed.suggestedName || submittedName);
+  const suggestedFullName = clipText(conservativeAlias || modelSuggestion, 120);
   if (!suggestedFullName) throw new Error("The name-review model returned an empty name.");
   let confidence = Number(parsed.confidence);
   if (!Number.isFinite(confidence)) confidence = 0;
@@ -432,13 +730,35 @@ async function processScorerNameReview(reviewId) {
     `Registered team players:\\n${playerContext}`,
     `Previous scorer names for this team: ${previousContext}`
   ].join("\\n\\n");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7e3);
   try {
-    const modelResponse = await fetch(HUGGING_FACE_CHAT_URL, {
+    const modelResponse = await fetch(HUGGING_FACE_CHAT_URL2, {
       method: "POST",
       headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "You are a careful name-normalization assistant. Return valid JSON only." }, { role: "user", content: prompt }], temperature: 0, max_tokens: 220 })
+      body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "You are a careful name-normalization assistant. Return valid JSON only." }, { role: "user", content: prompt }], temperature: 0, max_tokens: 220 }),
+      signal: controller.signal
     });
     const payload = await modelResponse.json().catch(() => null);
+    if (modelResponse.status === 402) {
+      const fallbackName = clipText(MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(review.submitted_name)] || review.submitted_name, 120);
+      await query(
+        `UPDATE scorer_name_reviews
+            SET suggested_name = :suggestedName, confidence = :confidence,
+                reason = :reason, matched_email = NULL, status = 'PENDING',
+                model = :model, error_message = NULL, updated_at = :now
+          WHERE id = :reviewId`,
+        {
+          reviewId,
+          suggestedName: fallbackName,
+          confidence: 0.5,
+          reason: "Hugging Face credits are temporarily unavailable (HTTP 402). The submitted name is retained as a manual-review suggestion; approve it only if it is correct.",
+          model: `${config.model} \xB7 manual fallback`,
+          now: Date.now()
+        }
+      );
+      return { reviewId, status: "PENDING" };
+    }
     if (!modelResponse.ok) throw new Error(`Hugging Face returned HTTP ${modelResponse.status}.`);
     const result = parseScorerReview(modelContent(payload), review.submitted_name, knownPlayers.map((player) => ({ email: player.email, displayName: player.display_name })));
     await query(
@@ -451,17 +771,19 @@ async function processScorerNameReview(reviewId) {
     );
     return { reviewId, status: "PENDING" };
   } catch (error) {
+    const message = error instanceof Error && error.name === "AbortError" ? "Hugging Face analysis timed out; retry this name." : error instanceof Error ? error.message : "Hugging Face name review failed.";
     await query(
       `UPDATE scorer_name_reviews SET status = 'FAILED', model = :model, error_message = :message, updated_at = :now WHERE id = :reviewId`,
-      { reviewId, model: config.model, message: clipText(error instanceof Error ? error.message : "Hugging Face name review failed.", 255), now: Date.now() }
+      { reviewId, model: config.model, message: clipText(message, 255), now: Date.now() }
     );
     return { reviewId, status: "FAILED" };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 async function processScorerNameReviews(reviewIds) {
-  const results = [];
-  for (const reviewId of reviewIds.slice(0, 100)) results.push(await processScorerNameReview(reviewId));
-  return results;
+  const ids = reviewIds.slice(0, 3);
+  return Promise.all(ids.map((reviewId) => processScorerNameReview(reviewId)));
 }
 async function backfillScorerReviewRecords() {
   await ensureScorerReviewTable();
@@ -473,6 +795,20 @@ async function backfillScorerReviewRecords() {
        JOIN matches m ON m.id = g.match_id
        LEFT JOIN scorer_name_reviews r ON r.goal_id = g.id
       WHERE r.id IS NULL`,
+    { now }
+  );
+  const fallbackEntries = Object.entries(MANUAL_FOOTBALLER_NAME_FALLBACKS);
+  const fallbackCase = fallbackEntries.map(([submittedName, suggestedName]) => `WHEN '${submittedName.replace(/'/g, "''")}' THEN '${suggestedName.replace(/'/g, "''")}'`).join(" ");
+  const fallbackNames = fallbackEntries.map(([submittedName]) => `'${submittedName.replace(/'/g, "''")}'`).join(", ");
+  await query(
+    `UPDATE scorer_name_reviews
+        SET suggested_name = CASE LOWER(TRIM(submitted_name)) ${fallbackCase} END,
+            confidence = 0.85,
+            reason = CONCAT('Conservative local alias normalization from \u201C', submitted_name, '\u201D. Admin approval is still required.'),
+            model = 'local-conservative-fallback', error_message = NULL, updated_at = :now
+      WHERE status = 'PENDING'
+        AND LOWER(TRIM(submitted_name)) IN (${fallbackNames})
+        AND COALESCE(suggested_name, '') <> CASE LOWER(TRIM(submitted_name)) ${fallbackCase} END`,
     { now }
   );
 }
@@ -693,9 +1029,132 @@ var registerRoute = asyncRoute(async (request, response) => {
 });
 app.post("/api/auth/register", registerRoute);
 app.post("/api/register", registerRoute);
+app.post("/api/news/refresh", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureNewsTables();
+  const seasonRows = await query("SELECT id, status FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
+  if (!seasonRows[0]) {
+    response.status(404).json({ error: "SEASON_NOT_FOUND", message: "Create a season before refreshing league news." });
+    return;
+  }
+  const result = await refreshLeagueNews(Number(seasonRows[0].id));
+  response.json(result);
+}));
+app.get("/api/cron/news", asyncRoute(async (request, response) => {
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  const authorization = request.headers.authorization;
+  if (cronSecret && authorization !== `Bearer ${cronSecret}`) {
+    response.status(401).json({ error: "UNAUTHORIZED_CRON", message: "The newsroom cron request is not authorized." });
+    return;
+  }
+  await ensureNewsTables();
+  const seasonRows = await query("SELECT id, status FROM seasons WHERE status IN ('ACTIVE', 'COMPLETED') ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
+  if (!seasonRows[0]) {
+    response.json({ skipped: true, reason: "NO_SEASON" });
+    return;
+  }
+  const seasonId = Number(seasonRows[0].id);
+  const result = await refreshLeagueNews(seasonId);
+  response.json({ ...result, seasonId, storyDate: leagueDateKey2() });
+}));
+app.post("/api/admin/seasons/:seasonId/complete", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const seasonId = Number(request.params.seasonId);
+  if (!Number.isInteger(seasonId) || seasonId <= 0) {
+    response.status(400).json({ error: "INVALID_SEASON_ID", message: "That season identifier is invalid." });
+    return;
+  }
+  const openRows = await query("SELECT COUNT(*) AS count FROM matches WHERE season_id = :seasonId AND status <> 'CONFIRMED'", { seasonId });
+  if (Number(openRows[0]?.count || 0) > 0) {
+    response.status(409).json({ error: "SEASON_NOT_FINISHED", message: "Every fixture must be officially confirmed before archiving the season." });
+    return;
+  }
+  const result = await archiveSeasonSnapshot(seasonId);
+  await query(`INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+    VALUES (:email, 'ARCHIVE_SEASON', 'season', :seasonId, JSON_OBJECT('archived', :archived), :now)`, { email: user.email, seasonId: String(seasonId), archived: result.archived ? 1 : 0, now: Date.now() });
+  response.json(result);
+}));
+async function playerRegistryRows() {
+  return query(
+    `SELECT g.team_id, t.name AS team_name, t.short_code, t.accent,
+            g.scorer_name, g.player_email,
+            COUNT(*) AS total_goals,
+            SUM(CASE WHEN m.status = 'CONFIRMED' THEN 1 ELSE 0 END) AS official_goals
+       FROM goals g
+       JOIN teams t ON t.id = g.team_id
+       JOIN matches m ON m.id = g.match_id
+      GROUP BY g.team_id, t.name, t.short_code, t.accent, g.scorer_name, g.player_email
+      ORDER BY t.name, official_goals DESC, total_goals DESC, g.scorer_name`
+  );
+}
+app.get("/api/admin/players", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  response.json({ players: await playerRegistryRows() });
+}));
+app.patch("/api/admin/players/rename", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const teamId = Number(request.body?.teamId);
+  const oldName = clipText(String(request.body?.oldName || ""), 120);
+  const newName = clipText(String(request.body?.newName || ""), 120);
+  const playerEmail = typeof request.body?.playerEmail === "string" && request.body.playerEmail.trim() ? request.body.playerEmail.trim().toLowerCase() : null;
+  if (!Number.isInteger(teamId) || teamId <= 0 || !oldName || !newName) {
+    response.status(400).json({ error: "INVALID_PLAYER_RENAME", message: "Choose a team and enter both the existing and new player name." });
+    return;
+  }
+  if (normalizeName(oldName) === normalizeName(newName)) {
+    response.status(400).json({ error: "NAME_UNCHANGED", message: "Enter a different player name before saving." });
+    return;
+  }
+  const teamRows = await query("SELECT id, name FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+  if (!teamRows[0]) {
+    response.status(404).json({ error: "TEAM_NOT_FOUND", message: "That team no longer exists." });
+    return;
+  }
+  const matchFilter = playerEmail ? "AND g.player_email = :playerEmail" : "AND (g.player_email IS NULL OR g.player_email = '')";
+  const countRows = await query(
+    `SELECT COUNT(*) AS total FROM goals g
+      WHERE g.team_id = :teamId AND g.scorer_name = :oldName ${matchFilter}`,
+    { teamId, oldName, playerEmail }
+  );
+  const goalCount = Number(countRows[0]?.total || 0);
+  if (!goalCount) {
+    response.status(404).json({ error: "PLAYER_NOT_FOUND", message: "No matching scorer records were found for that team." });
+    return;
+  }
+  const now = Date.now();
+  await ensureScorerReviewTable();
+  await withTransaction(async (connection) => {
+    await connection.query({
+      sql: `UPDATE scorer_name_reviews r
+               JOIN goals g ON g.id = r.goal_id
+              SET r.submitted_name = :newName,
+                  r.approved_name = CASE WHEN r.status = 'APPROVED' THEN :newName ELSE r.approved_name END,
+                  r.updated_at = :now
+            WHERE g.team_id = :teamId AND g.scorer_name = :oldName ${playerEmail ? "AND g.player_email = :playerEmail" : "AND (g.player_email IS NULL OR g.player_email = '')"}`,
+      namedPlaceholders: true
+    }, { teamId, oldName, newName, playerEmail, now });
+    await connection.query({
+      sql: `UPDATE goals SET scorer_name = :newName
+              WHERE team_id = :teamId AND scorer_name = :oldName ${playerEmail ? "AND player_email = :playerEmail" : "AND (player_email IS NULL OR player_email = '')"}`,
+      namedPlaceholders: true
+    }, { teamId, oldName, newName, playerEmail });
+    await connection.query({
+      sql: `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+            VALUES (:email, 'RENAME_PLAYER', 'team', :teamId,
+                    JSON_OBJECT('oldName', :oldName, 'newName', :newName, 'playerEmail', COALESCE(:playerEmail, ''), 'goalCount', :goalCount), :now)`,
+      namedPlaceholders: true
+    }, { email: user.email, teamId: String(teamId), oldName, newName, playerEmail, goalCount, now });
+  });
+  response.json({ ok: true, updated: goalCount, teamId, oldName, newName, players: await playerRegistryRows() });
+}));
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
+  await ensureNewsTables();
   const seasonRows = await query("SELECT id, name, status, matchday_count, current_matchday FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
   const season = seasonRows[0] || null;
   const teams = await query("SELECT id, name, short_code, manager_name, accent, status, created_by_email FROM teams ORDER BY name");
@@ -706,7 +1165,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       ORDER BY u.display_name`
   );
   const params = { seasonId: season?.id ?? 0 };
-  const matches = season ? await query(
+  const rawMatches = season ? await query(
     `SELECT m.id, m.matchday, m.kickoff_at, m.original_kickoff_at, m.rescheduled_at, m.reschedule_reason,
             m.status, m.home_score, m.away_score,
             h.id AS home_team_id, h.name AS home_team_name, h.short_code AS home_short_code,
@@ -717,6 +1176,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       ORDER BY m.matchday, m.kickoff_at`,
     params
   ) : [];
+  const matches = attachMatchdayDates(rawMatches);
   const matchIds = matches.map((match) => Number(match.id));
   const goals = matchIds.length ? await query(
     `SELECT g.id, g.match_id, g.team_id, g.player_email, g.scorer_name, g.minute
@@ -736,6 +1196,8 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       ORDER BY goals DESC, g.scorer_name`
   );
   const scorerReviews = user.role === "admin" ? (await backfillScorerReviewRecords(), await scorerReviewRows()) : [];
+  const news = await getNewsRows();
+  const seasonArchives = await getArchiveRows();
   response.json({
     season,
     teams,
@@ -744,7 +1206,9 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
     goals,
     standings: calculateStandings(teams.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code })), confirmedMatches.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: Number(match.home_score), awayScore: Number(match.away_score) }))),
     stats,
-    scorerReviews
+    scorerReviews,
+    news,
+    seasonArchives
   });
 }));
 app.get("/api/teams", asyncRoute(async (request, response) => {
@@ -785,11 +1249,14 @@ app.post("/api/admin/scorer-reviews/analyze", asyncRoute(async (request, respons
   const user = requireAdmin(request, response);
   if (!user) return;
   await backfillScorerReviewRecords();
-  const rows = await query(
+  const requestedIds = Array.isArray(request.body?.reviewIds) ? request.body.reviewIds.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0).slice(0, 3) : [];
+  const rows = requestedIds.length ? await query(
+    `SELECT id FROM scorer_name_reviews WHERE id IN (${requestedIds.join(",")}) AND status IN ('PENDING', 'FAILED') ORDER BY id`
+  ) : await query(
     `SELECT id FROM scorer_name_reviews
-      WHERE status IN ('PENDING', 'FAILED')
-      ORDER BY CASE WHEN suggested_name IS NULL THEN 0 ELSE 1 END, created_at ASC
-      LIMIT 100`
+          WHERE status IN ('PENDING', 'FAILED')
+          ORDER BY CASE WHEN suggested_name IS NULL THEN 0 ELSE 1 END, created_at ASC
+          LIMIT 3`
   );
   const results = await processScorerNameReviews(rows.map((row) => Number(row.id)));
   response.json({ analyzed: results.filter((item) => item.status === "PENDING").length, failed: results.filter((item) => item.status === "FAILED").length, reviews: await scorerReviewRows() });
@@ -914,8 +1381,10 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
   }
   const name = String(request.body?.name || "").trim();
   const shortCode = String(request.body?.shortCode || "").trim().toUpperCase();
-  if (!name || !shortCode) {
-    response.status(400).json({ error: "INVALID_TEAM_UPDATE", message: "Team name and team code are required." });
+  const managerName = String(request.body?.managerName || "").trim();
+  const accent = String(request.body?.accent || "#9DD36A").trim();
+  if (!name || !shortCode || !managerName) {
+    response.status(400).json({ error: "INVALID_TEAM_UPDATE", message: "Team name, team code, and manager name are required." });
     return;
   }
   if (name.length > 120) {
@@ -926,7 +1395,11 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
     response.status(400).json({ error: "INVALID_TEAM_CODE", message: "Team code must contain 2 to 12 letters or numbers." });
     return;
   }
-  const teamRows = await query("SELECT id, name, short_code FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+  if (managerName.length > 120 || !/^#[0-9A-Fa-f]{6}$/.test(accent)) {
+    response.status(400).json({ error: "INVALID_TEAM_STYLE", message: "Manager name must be 120 characters or fewer and accent must be a six-digit hex color." });
+    return;
+  }
+  const teamRows = await query("SELECT id, name, short_code, manager_name, accent FROM teams WHERE id = :teamId LIMIT 1", { teamId });
   const current = teamRows[0];
   if (!current) {
     response.status(404).json({ error: "TEAM_NOT_FOUND", message: "That team no longer exists." });
@@ -946,18 +1419,18 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
     response.status(409).json({ error: "TEAM_CODE_IN_USE", message: "That team code already exists. Choose a different code." });
     return;
   }
-  if (current.name === name && current.short_code === shortCode) {
-    response.json({ teamId, name, shortCode, updated: false });
+  if (current.name === name && current.short_code === shortCode && current.manager_name === managerName && current.accent === accent) {
+    response.json({ teamId, name, shortCode, managerName, accent, updated: false });
     return;
   }
   const now = Date.now();
   try {
     await withTransaction(async (connection) => {
-      await connection.execute("UPDATE teams SET name = ?, short_code = ? WHERE id = ?", [name, shortCode, teamId]);
+      await connection.execute("UPDATE teams SET name = ?, short_code = ?, manager_name = ?, accent = ? WHERE id = ?", [name, shortCode, managerName, accent, teamId]);
       await connection.execute(
         `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
-         VALUES (?, 'TEAM_UPDATED', 'team', ?, JSON_OBJECT('oldName', ?, 'newName', ?, 'oldShortCode', ?, 'newShortCode', ?), ?)`,
-        [user.email, String(teamId), current.name, name, current.short_code, shortCode, now]
+         VALUES (?, 'TEAM_UPDATED', 'team', ?, JSON_OBJECT('oldName', ?, 'newName', ?, 'oldShortCode', ?, 'newShortCode', ?, 'oldManagerName', ?, 'newManagerName', ?, 'oldAccent', ?, 'newAccent', ?), ?)`,
+        [user.email, String(teamId), current.name, name, current.short_code, shortCode, current.manager_name, managerName, current.accent, accent, now]
       );
     });
   } catch (error) {
@@ -965,7 +1438,7 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
     if (conflict) throw conflict;
     throw error;
   }
-  response.json({ teamId, name, shortCode, updated: true });
+  response.json({ teamId, name, shortCode, managerName, accent, updated: true });
 }));
 app.delete("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
@@ -1067,6 +1540,54 @@ app.post("/api/admin/users", asyncRoute(async (request, response) => {
     );
   });
   response.status(201).json({ user: await findUserByEmail(email) });
+}));
+app.patch("/api/admin/users/:email", asyncRoute(async (request, response) => {
+  const actor = requireAdmin(request, response);
+  if (!actor) return;
+  const email = decodeURIComponent(String(request.params.email || "")).trim().toLowerCase();
+  const displayName = clipText(String(request.body?.displayName || "").trim(), 120);
+  const role = request.body?.role === "admin" ? "admin" : request.body?.role === "player" ? "player" : "";
+  const status = ["ACTIVE", "INVITED", "DISABLED"].includes(String(request.body?.status)) ? String(request.body.status) : "";
+  const rawTeamId = request.body?.teamId;
+  const teamId = rawTeamId === null || rawTeamId === void 0 || rawTeamId === "" ? null : Number(rawTeamId);
+  if (!email.includes("@") || !displayName || !role || !status || teamId !== null && (!Number.isInteger(teamId) || teamId <= 0)) {
+    response.status(400).json({ error: "INVALID_USER_UPDATE", message: "Provide a display name, valid role, status, and team assignment." });
+    return;
+  }
+  if (email === actor.email && (role !== "admin" || status !== "ACTIVE")) {
+    response.status(400).json({ error: "SELF_LOCKOUT_BLOCKED", message: "You cannot remove your own active admin access." });
+    return;
+  }
+  const existingRows = await query(
+    "SELECT email, display_name, role, status FROM users WHERE email = :email LIMIT 1",
+    { email }
+  );
+  const existing = existingRows[0];
+  if (!existing) {
+    response.status(404).json({ error: "USER_NOT_FOUND", message: "That player account no longer exists." });
+    return;
+  }
+  if (role === "player" && teamId !== null) {
+    const teamRows = await query("SELECT id, status FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+    if (!teamRows[0] || teamRows[0].status === "REJECTED") {
+      response.status(400).json({ error: "INVALID_TEAM_ASSIGNMENT", message: "Assign the player to an existing non-rejected team." });
+      return;
+    }
+  }
+  const now = Date.now();
+  await withTransaction(async (connection) => {
+    await connection.execute("UPDATE users SET display_name = ?, role = ?, status = ?, updated_at = ? WHERE email = ?", [displayName, role, status, now, email]);
+    await connection.execute("DELETE FROM team_memberships WHERE user_email = ?", [email]);
+    if (role === "player" && teamId !== null) {
+      await connection.execute("INSERT INTO team_memberships (user_email, team_id, membership_role, created_at) VALUES (?, ?, 'PLAYER', ?)", [email, teamId, now]);
+    }
+    await connection.execute(
+      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+       VALUES (?, 'UPDATE_USER', 'user', ?, JSON_OBJECT('displayName', ?, 'role', ?, 'status', ?, 'teamId', ?), ?)`,
+      [actor.email, email, displayName, role, status, teamId, now]
+    );
+  });
+  response.json({ user: await findUserByEmail(email) });
 }));
 app.post("/api/admin/seasons", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
@@ -1219,7 +1740,7 @@ app.get("/api/seasons/:seasonId/matches", asyncRoute(async (request, response) =
   const teamFilter = user.role === "player" && user.teamId ? "AND (m.home_team_id = :teamId OR m.away_team_id = :teamId)" : "";
   if (user.role === "player" && user.teamId) params.teamId = user.teamId;
   const matches = await query(
-    `SELECT m.id, m.season_id, m.matchday, m.kickoff_at, m.status, m.home_score, m.away_score,
+    `SELECT m.id, m.season_id, m.matchday, m.kickoff_at, m.original_kickoff_at, m.status, m.home_score, m.away_score,
             h.id AS home_team_id, h.name AS home_team_name, h.short_code AS home_short_code,
             a.id AS away_team_id, a.name AS away_team_name, a.short_code AS away_short_code,
             m.submitted_by_email, m.confirmed_by_email
@@ -1228,7 +1749,7 @@ app.get("/api/seasons/:seasonId/matches", asyncRoute(async (request, response) =
       ORDER BY m.matchday, m.kickoff_at`,
     params
   );
-  response.json({ matches });
+  response.json({ matches: attachMatchdayDates(matches) });
 }));
 app.get("/api/seasons/:seasonId/standings", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
@@ -1253,7 +1774,12 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     return;
   }
   const matchRows = await query(
-    "SELECT home_team_id, away_team_id, kickoff_at, status, submitted_by_email FROM matches WHERE id = :matchId LIMIT 1",
+    `SELECT m.home_team_id, m.away_team_id, m.season_id, m.matchday, m.kickoff_at,
+            CASE WHEN m.original_kickoff_at IS NOT NULL THEN m.kickoff_at
+              ELSE (SELECT MIN(m2.kickoff_at) FROM matches m2 WHERE m2.season_id = m.season_id AND m2.matchday = m.matchday AND m2.original_kickoff_at IS NULL)
+            END AS matchday_anchor_at,
+            m.status, m.submitted_by_email
+       FROM matches m WHERE m.id = :matchId LIMIT 1`,
     { matchId }
   );
   const match = matchRows[0];
@@ -1266,8 +1792,10 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
     return;
   }
   const kickoffAt = Number(match.kickoff_at);
-  if (!Number.isFinite(kickoffAt) || Date.now() < kickoffAt) {
-    response.status(425).json({ error: "MATCH_NOT_OPEN", message: "This fixture is not open yet. Results unlock at the scheduled kickoff time." });
+  const matchdayAnchorAt = Number(match.matchday_anchor_at ?? kickoffAt);
+  const scheduledDate = Number.isFinite(matchdayAnchorAt) ? leagueDateKey2(matchdayAnchorAt) : "";
+  if (!scheduledDate || leagueDateKey2() < scheduledDate) {
+    response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${scheduledDate ? formatLeagueDateLabel(scheduledDate) : "its scheduled date"}. Results can be entered from the scheduled league date.` });
     return;
   }
   if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {

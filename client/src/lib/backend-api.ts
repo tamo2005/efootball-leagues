@@ -95,6 +95,17 @@ export type BackendScorerReview = {
   away_team_name: string;
 };
 
+export type BackendPlayerRegistryEntry = {
+  team_id: number;
+  team_name: string;
+  short_code: string;
+  accent: string;
+  scorer_name: string;
+  player_email: string | null;
+  total_goals: number;
+  official_goals: number;
+};
+
 export type BackendDashboard = {
   season: { id: number; name: string; status: string; matchday_count: number; current_matchday: number } | null;
   teams: Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string; status: string; created_by_email: string | null }>;
@@ -110,6 +121,17 @@ export type BackendDashboard = {
 
 export function backendDashboard() {
   return request<BackendDashboard>("/api/dashboard");
+}
+
+export function backendGetPlayers() {
+  return request<{ players: BackendPlayerRegistryEntry[] }>("/api/admin/players");
+}
+
+export function backendRenamePlayer(teamId: number, oldName: string, newName: string, playerEmail?: string | null) {
+  return request<{ ok: true; updated: number; teamId: number; oldName: string; newName: string; players: BackendPlayerRegistryEntry[] }>("/api/admin/players/rename", {
+    method: "PATCH",
+    body: JSON.stringify({ teamId, oldName, newName, playerEmail: playerEmail || undefined }),
+  });
 }
 
 export function backendRefreshNews() {

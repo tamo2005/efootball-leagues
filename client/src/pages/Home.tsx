@@ -73,7 +73,7 @@ import {
   type TiebreakerRule,
   type UserAccount,
 } from "@/lib/league-db";
-import { backendAnalyzeScorerReviews, backendApproveScorerReview, backendApproveTeam, backendCompleteSeason, backendConfirmResult, backendCreateSeason, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendLogin, backendLogout, backendMe, backendRefreshNews, backendRegister, backendRejectScorerReview, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, backendUpdateTeam, backendUpdateUser, mergeBackendDashboard, toLocalUser, type BackendScorerReview } from "@/lib/backend-api";
+import { backendAnalyzeScorerReviews, backendApproveScorerReview, backendApproveTeam, backendCompleteSeason, backendConfirmResult, backendCreateSeason, backendCreateTeam, backendDashboard, backendDeleteTeam, backendEnabled, backendGetPlayers, backendLogin, backendLogout, backendMe, backendRefreshNews, backendRegister, backendRejectScorerReview, backendRenamePlayer, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendStartTournament, backendSubmitResult, backendUpdateTeam, backendUpdateUser, mergeBackendDashboard, toLocalUser, type BackendPlayerRegistryEntry, type BackendScorerReview } from "@/lib/backend-api";
 
 type View = "overview" | "fixtures" | "teams" | "table" | "database" | "rules";
 type ResultInput = { id: string; teamId: string; playerName: string; playerEmail?: string; minute: string };
@@ -277,10 +277,47 @@ function TeamPerformancePanel({ performance }: { performance: TeamPerformance[] 
   return <section className="panel team-performance-panel"><div className="panel-header"><div><p className="eyebrow">LIVE TEAM INTELLIGENCE</p><h2>Attack & defensive record</h2><p className="section-caption">Confirmed matches only. A clean sheet means conceding zero goals in one match.</p></div><Trophy size={18} className="panel-icon" /></div><div className="performance-record-grid"><div className="performance-record-card"><div className="performance-record-heading"><span>Highest scoring teams</span><small>Goals for</small></div><div className="performance-record-list">{leaderRows(scoringLeaders, "goals")}</div></div><div className="performance-record-card"><div className="performance-record-heading"><span>Most clean sheets</span><small>0 goals conceded</small></div><div className="performance-record-list">{leaderRows(cleanSheetLeaders, "cleanSheets")}</div></div></div>{!performance.some((team) => team.matchesPlayed > 0) && <p className="muted-copy">Confirmed match results will populate these rankings.</p>}</section>;
 }
 
+function FootballMomentsPanel() {
+  const moments = [
+    { image: "/assets/football/goal-celebration.jpg", label: "Matchday energy", title: "Every goal has a story." },
+    { image: "/assets/football/goalkeeper-save.jpg", label: "Defensive detail", title: "The moments that change a table." },
+    { image: "/assets/football/football-heritage-captains.jpg", label: "League identity", title: "Built by players, remembered by teams." },
+  ];
+  return <section className="panel football-moments-panel"><div className="panel-header"><div><p className="eyebrow">FOOTBALL MOMENTS</p><h2>The league beyond the scoreline</h2><p className="section-caption">Original editorial artwork made for eLeague. No licensed photographs, official club marks, or real-player likenesses.</p></div><Sparkles size={18} className="panel-icon" /></div><div className="football-moment-grid">{moments.map((moment) => <article className="football-moment-card" key={moment.image}><img src={moment.image} alt="" /><div><span>{moment.label}</span><strong>{moment.title}</strong></div></article>)}</div></section>;
+}
+
 function ScorerReviewPanel({ reviews, onAnalyze, onApprove, onReject, busy }: { reviews: BackendScorerReview[]; onAnalyze: () => void; onApprove: (reviewId: number, approvedName: string) => void; onReject: (reviewId: number) => void; busy: boolean }) {
   const [editedNames, setEditedNames] = useState<Record<number, string>>({});
   const actionable = reviews.filter((review) => review.status === "PENDING" || review.status === "FAILED");
   return <section className="panel scorer-review-panel"><div className="panel-header"><div><p className="eyebrow">AI NAME REVIEW</p><h2>{actionable.length ? `${actionable.length} names need your decision` : "Scorer names are clear"}</h2><p className="section-caption">Hugging Face suggests a full footballer name. You can edit it yourself, then approve it. Nothing becomes official automatically.</p></div><Button onClick={onAnalyze} disabled={busy || !reviews.some((review) => review.status === "FAILED" || (review.status === "PENDING" && !review.suggested_name))}><Sparkles size={15} /> {busy ? "Analyzing…" : "Analyze pending names"}</Button></div>{!reviews.length ? <div className="scorer-review-empty"><Sparkles size={22} /><strong>No scorer names are waiting.</strong><span>New submitted goals will appear here for AI-assisted review.</span></div> : <div className="scorer-review-list">{reviews.slice(0, 50).map((review) => { const confidence = review.confidence === null ? null : Math.round(review.confidence * 100); const editable = review.status === "PENDING" || review.status === "FAILED"; const editedName = editedNames[review.id] ?? review.suggested_name ?? ""; const canDecide = editable && Boolean(editedName.trim()); return <article className={`scorer-review-row review-${review.status.toLowerCase()}`} key={review.id}><div className="scorer-review-main"><div className="scorer-review-context"><span className="scorer-review-status">{review.status === "FAILED" ? "Analysis failed" : review.status === "PENDING" ? review.suggested_name ? "Awaiting approval" : "Queued for analysis" : review.status}</span><small>{review.team_name} · {review.home_team_name} vs {review.away_team_name} · Matchday {review.matchday}</small></div><div className="scorer-name-comparison"><div><small>Submitted name</small><strong>{review.submitted_name}</strong></div><ArrowRight size={15} /><div className="scorer-edit-field"><small>{editable ? "Full name to approve" : "Approved full name"}</small>{editable ? <input value={editedName} onChange={(event) => setEditedNames((current) => ({ ...current, [review.id]: event.target.value }))} placeholder="e.g. Alessandro Del Piero" aria-label={`Full name for ${review.submitted_name}`} maxLength={120} /> : <strong>{review.approved_name || review.suggested_name || "—"}</strong>}</div></div><p className="scorer-review-reason">{review.error_message || review.reason || (editable ? "Edit the full name if needed, then approve it." : "The approved name is now official.")}{confidence !== null && <span className="scorer-confidence">{confidence}% confidence</span>}</p></div>{canDecide && <div className="scorer-review-actions"><Button onClick={() => onApprove(review.id, editedName.trim())}><Check size={14} /> Approve name</Button><Button variant="outline" onClick={() => onReject(review.id)}><X size={14} /> Reject</Button></div>}</article>; })}</div>}</section>;
+}
+
+function PlayerRegistryPanel({ players, onRename, busy }: { players: BackendPlayerRegistryEntry[]; onRename: (player: BackendPlayerRegistryEntry, newName: string) => Promise<boolean>; busy: boolean }) {
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+  const grouped = players.reduce<Record<string, { teamId: number; teamName: string; shortCode: string; accent: string; players: BackendPlayerRegistryEntry[] }>>((groups, player) => {
+    const key = String(player.team_id);
+    if (!groups[key]) groups[key] = { teamId: Number(player.team_id), teamName: player.team_name, shortCode: player.short_code, accent: player.accent, players: [] };
+    groups[key].players.push(player);
+    return groups;
+  }, {});
+  const teamGroups = Object.values(grouped);
+  function rowKey(player: BackendPlayerRegistryEntry) {
+    return `${player.team_id}-${player.player_email || "unlinked"}-${player.scorer_name}`;
+  }
+  function beginEdit(player: BackendPlayerRegistryEntry) {
+    setEditingKey(rowKey(player));
+    setDraftName(player.scorer_name);
+  }
+  async function saveEdit(player: BackendPlayerRegistryEntry) {
+    if (!draftName.trim()) return;
+    const saved = await onRename(player, draftName.trim());
+    if (saved) {
+      setEditingKey(null);
+      setDraftName("");
+    }
+  }
+  return <section className="panel player-registry-panel"><div className="panel-header player-registry-header"><div><p className="eyebrow">PLAYER REGISTRY</p><h2>{players.length ? `${players.length} scorer identities by team` : "No scorer identities yet"}</h2><p className="section-caption">Every name below comes from the goals table. Save is an admin approval: it updates every matching goal for that team and keeps the AI review records aligned.</p></div><div className="player-registry-art" aria-hidden="true"><img src="/assets/football/player-registry-portrait.jpg" alt="" /></div><Users size={18} className="panel-icon" /></div>{!teamGroups.length ? <div className="scorer-review-empty"><Users size={22} /><strong>Player identities will appear after the first goal is logged.</strong><span>Pending and confirmed goals are grouped here automatically.</span></div> : <div className="player-registry-groups">{teamGroups.map((group) => <article className="player-registry-team" key={group.teamId} style={{ "--registry-accent": group.accent } as React.CSSProperties}><div className="player-registry-team-heading"><div><span className="player-registry-code">{group.shortCode}</span><div><h3>{group.teamName}</h3><small>{group.players.length} scorer {group.players.length === 1 ? "identity" : "identities"}</small></div></div><span className="player-registry-team-mark">{initials(group.teamName)}</span></div><div className="player-registry-list">{group.players.map((player) => { const key = rowKey(player); const editing = editingKey === key; const official = Number(player.official_goals); const total = Number(player.total_goals); return <div className={`player-registry-row ${editing ? "is-editing" : ""}`} key={key}><div className="player-registry-identity"><span className="scorer-avatar">{initials(player.scorer_name)}</span>{editing ? <form className="player-registry-edit" onSubmit={(event) => { event.preventDefault(); void saveEdit(player); }}><input autoFocus value={draftName} onChange={(event) => setDraftName(event.target.value)} maxLength={120} aria-label={`Rename ${player.scorer_name}`} /><small>Admin approval required before this becomes the official name.</small><div><button type="submit" className="row-action" disabled={busy || !draftName.trim()}><Check size={13} /> {busy ? "Saving…" : "Approve rename"}</button><button type="button" className="row-action row-action-secondary" onClick={() => { setEditingKey(null); setDraftName(""); }} disabled={busy}><X size={13} /> Cancel</button></div></form> : <div><strong>{player.scorer_name}</strong><small>{player.player_email || "Unlinked scorer identity"}</small></div>}</div><div className="player-registry-metrics"><span><b>{official}</b><small>official</small></span><span><b>{Math.max(0, total - official)}</b><small>pending</small></span><span><b>{total}</b><small>total goals</small></span></div>{!editing && <button className="icon-button" onClick={() => beginEdit(player)} disabled={busy} aria-label={`Edit ${player.scorer_name} for ${group.teamName}`}><Pencil size={14} /></button>}</div>; })}</div></article>)}</div>}</section>;
 }
 
 function AdminUserEditor({ account, teams, busy, onCancel, onSave }: { account: UserAccount; teams: Team[]; busy: boolean; onCancel: () => void; onSave: (email: string, payload: { displayName: string; role: "admin" | "player"; status: "ACTIVE" | "INVITED" | "DISABLED"; teamId: number | null }) => void }) {
@@ -297,9 +334,9 @@ function AdminUserEditor({ account, teams, busy, onCancel, onSave }: { account: 
   </form>;
 }
 
-function DatabasePanel({ database, user, scorerReviews, onAnalyzeScorerReviews, onApproveScorerReview, onRejectScorerReview, scorerReviewBusy, onUpdateUser, userEditBusy }: { database: LeagueDatabase; user: UserAccount; scorerReviews: BackendScorerReview[]; onAnalyzeScorerReviews: () => void; onApproveScorerReview: (reviewId: number, approvedName: string) => void; onRejectScorerReview: (reviewId: number) => void; scorerReviewBusy: boolean; onUpdateUser: (email: string, payload: { displayName: string; role: "admin" | "player"; status: "ACTIVE" | "INVITED" | "DISABLED"; teamId: number | null }) => void; userEditBusy: boolean }) {
+function DatabasePanel({ database, user, players, onRenamePlayer, playerRenameBusy, scorerReviews, onAnalyzeScorerReviews, onApproveScorerReview, onRejectScorerReview, scorerReviewBusy, onUpdateUser, userEditBusy }: { database: LeagueDatabase; user: UserAccount; players: BackendPlayerRegistryEntry[]; onRenamePlayer: (player: BackendPlayerRegistryEntry, newName: string) => Promise<boolean>; playerRenameBusy: boolean; scorerReviews: BackendScorerReview[]; onAnalyzeScorerReviews: () => void; onApproveScorerReview: (reviewId: number, approvedName: string) => void; onRejectScorerReview: (reviewId: number) => void; scorerReviewBusy: boolean; onUpdateUser: (email: string, payload: { displayName: string; role: "admin" | "player"; status: "ACTIVE" | "INVITED" | "DISABLED"; teamId: number | null }) => void; userEditBusy: boolean }) {
   const [editingEmail, setEditingEmail] = useState<string | null>(null);
-  return <section className="view-panel"><div className="database-hero"><div><p className="eyebrow">DATABASE CONTROL CENTER</p><h2>Identity, access & records</h2><p>All league records are typed, permission-aware, and loaded from the live TiDB database.</p></div><span className="health-badge"><span /> Schema healthy</span></div><div className="database-grid"><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">ACCESS DIRECTORY</p><h2>{database.users.length} accounts</h2></div><UserCog size={18} className="panel-icon" /></div><div className="user-directory">{database.users.map((account) => { const team = account.teamId ? teamById(database.teams, account.teamId) : undefined; return editingEmail === account.email ? <AdminUserEditor key={account.id} account={account} teams={database.teams} busy={userEditBusy} onCancel={() => setEditingEmail(null)} onSave={(email, payload) => onUpdateUser(email, payload)} /> : <div className="user-directory-row" key={account.id}><span className="user-avatar">{initials(account.name)}</span><div><strong>{account.name}</strong><small>{account.email}{team ? ` · ${team.name}` : " · Competition-wide"}</small></div><span className={`role-badge role-${account.role}`}>{account.role}</span>{user.role === "admin" && <button className="icon-button" aria-label={`Edit ${account.name}`} onClick={() => setEditingEmail(account.email)}><Pencil size={14} /></button>}</div>; })}</div><p className="permission-note"><ShieldCheck size={14} /> You are signed in as <strong>{user.name}</strong>. {user.role === "admin" ? "Admin actions are unlocked." : "Player actions are limited to assigned fixtures."}</p></article><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">RECORD COUNTS</p><h2>Source of truth</h2></div><Database size={18} className="panel-icon" /></div><div className="record-counts"><div><strong>{database.teams.length}</strong><span>teams</span></div><div><strong>{database.matches.length}</strong><span>fixtures</span></div><div><strong>{database.matches.filter((match) => match.status === "CONFIRMED").length}</strong><span>official results</span></div><div><strong>{database.users.length}</strong><span>users</span></div></div><p className="muted-copy">This dashboard is connected to the production database. Empty sections mean records have not been created yet.</p></article></div><ScorerReviewPanel reviews={scorerReviews} onAnalyze={onAnalyzeScorerReviews} onApprove={onApproveScorerReview} onReject={onRejectScorerReview} busy={scorerReviewBusy} /></section>;
+  return <section className="view-panel"><div className="database-hero"><div><p className="eyebrow">DATABASE CONTROL CENTER</p><h2>Identity, access & records</h2><p>All league records are typed, permission-aware, and loaded from the live TiDB database.</p></div><span className="health-badge"><span /> Schema healthy</span></div><div className="database-grid"><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">ACCESS DIRECTORY</p><h2>{database.users.length} accounts</h2></div><UserCog size={18} className="panel-icon" /></div><div className="user-directory">{database.users.map((account) => { const team = account.teamId ? teamById(database.teams, account.teamId) : undefined; return editingEmail === account.email ? <AdminUserEditor key={account.id} account={account} teams={database.teams} busy={userEditBusy} onCancel={() => setEditingEmail(null)} onSave={(email, payload) => onUpdateUser(email, payload)} /> : <div className="user-directory-row" key={account.id}><span className="user-avatar">{initials(account.name)}</span><div><strong>{account.name}</strong><small>{account.email}{team ? ` · ${team.name}` : " · Competition-wide"}</small></div><span className={`role-badge role-${account.role}`}>{account.role}</span>{user.role === "admin" && <button className="icon-button" aria-label={`Edit ${account.name}`} onClick={() => setEditingEmail(account.email)}><Pencil size={14} /></button>}</div>; })}</div><p className="permission-note"><ShieldCheck size={14} /> You are signed in as <strong>{user.name}</strong>. {user.role === "admin" ? "Admin actions are unlocked." : "Player actions are limited to assigned fixtures."}</p></article><article className="panel database-card"><div className="panel-header"><div><p className="eyebrow">RECORD COUNTS</p><h2>Source of truth</h2></div><Database size={18} className="panel-icon" /></div><div className="record-counts"><div><strong>{database.teams.length}</strong><span>teams</span></div><div><strong>{database.matches.length}</strong><span>fixtures</span></div><div><strong>{database.matches.filter((match) => match.status === "CONFIRMED").length}</strong><span>official results</span></div><div><strong>{database.users.length}</strong><span>users</span></div></div><p className="muted-copy">This dashboard is connected to the production database. Empty sections mean records have not been created yet.</p></article></div>{user.role === "admin" && <PlayerRegistryPanel players={players} onRename={onRenamePlayer} busy={playerRenameBusy} />}<ScorerReviewPanel reviews={scorerReviews} onAnalyze={onAnalyzeScorerReviews} onApprove={onApproveScorerReview} onReject={onRejectScorerReview} busy={scorerReviewBusy} /></section>;
 }
 
 function RulesPanel({ rules, isAdmin, onReset }: { rules: TiebreakerRule[]; isAdmin: boolean; onReset: () => void }) {
@@ -432,7 +469,9 @@ export default function Home() {
   const [fixtureFilter, setFixtureFilter] = useState<"all" | "upcoming" | "pending" | "completed">("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [scorerReviews, setScorerReviews] = useState<BackendScorerReview[]>([]);
+  const [playerRegistry, setPlayerRegistry] = useState<BackendPlayerRegistryEntry[]>([]);
   const [scorerReviewBusy, setScorerReviewBusy] = useState(false);
+  const [playerRenameBusy, setPlayerRenameBusy] = useState(false);
   const [userEditBusy, setUserEditBusy] = useState(false);
   const [newsBusy, setNewsBusy] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -452,8 +491,10 @@ export default function Home() {
   }, [useBackend]);
   useEffect(() => {
     if (!useBackend || !remoteUser) return;
-    backendDashboard().then((snapshot) => { setDatabase((current) => mergeBackendDashboard(current, snapshot)); setScorerReviews(snapshot.scorerReviews || []); }).catch((error) => toast.error("Could not load league data", { description: error instanceof Error ? error.message : "Try again shortly." }));
-  }, [useBackend, remoteUser?.id]);
+    Promise.all([backendDashboard(), remoteUser.role === "admin" ? backendGetPlayers() : Promise.resolve({ players: [] as BackendPlayerRegistryEntry[] })])
+      .then(([snapshot, registry]) => { setDatabase((current) => mergeBackendDashboard(current, snapshot)); setScorerReviews(snapshot.scorerReviews || []); setPlayerRegistry(registry.players); })
+      .catch((error) => toast.error("Could not load league data", { description: error instanceof Error ? error.message : "Try again shortly." }));
+  }, [useBackend, remoteUser?.id, remoteUser?.role]);
 
   const user = useBackend ? remoteUser : getCurrentUser(database);
   const isAdmin = user?.role === "admin";
@@ -516,9 +557,27 @@ export default function Home() {
 
   async function refreshRemoteDashboard() {
     if (!useBackend) return;
-    const snapshot = await backendDashboard();
+    const [snapshot, registry] = await Promise.all([backendDashboard(), isAdmin ? backendGetPlayers() : Promise.resolve({ players: [] as BackendPlayerRegistryEntry[] })]);
     setDatabase((current) => mergeBackendDashboard(current, snapshot));
     setScorerReviews(snapshot.scorerReviews || []);
+    if (isAdmin) setPlayerRegistry(registry.players);
+  }
+
+  async function renamePlayer(player: BackendPlayerRegistryEntry, newName: string) {
+    if (!isAdmin || !useBackend) return false;
+    setPlayerRenameBusy(true);
+    try {
+      const result = await backendRenamePlayer(Number(player.team_id), player.scorer_name, newName, player.player_email);
+      setPlayerRegistry(result.players);
+      await refreshRemoteDashboard();
+      toast.success("Player name approved", { description: `${result.updated} goal${result.updated === 1 ? "" : "s"} updated for ${player.team_name}.` });
+      return true;
+    } catch (error) {
+      toast.error("Player name was not updated", { description: error instanceof Error ? error.message : "Try again shortly." });
+      return false;
+    } finally {
+      setPlayerRenameBusy(false);
+    }
   }
 
   async function updateUserAccount(email: string, payload: { displayName: string; role: "admin" | "player"; status: "ACTIVE" | "INVITED" | "DISABLED"; teamId: number | null }) {
@@ -879,6 +938,7 @@ export default function Home() {
             <div className="metric-grid"><MetricCard label="Confirmed matches" value={`${confirmedCount} / ${database.matches.length}`} note={`${database.matches.length ? Math.round((confirmedCount / database.matches.length) * 100) : 0}% of the season complete`} accent="#9dd36a" icon={Check} /><MetricCard label="Pending confirmation" value={String(pendingCount).padStart(2, "0")} note="Review before the table updates" accent="#f0b35b" icon={Clock3} /><MetricCard label="Teams competing" value={String(database.teams.length).padStart(2, "0")} note="All manager records are assigned" accent="#79b9f2" icon={Users} /><MetricCard label="Database health" value="100%" note="No duplicate or missing records" accent="#bf9cf3" icon={Database} /></div>
             <div className="dashboard-grid"><section className="panel standings-panel"><div className="panel-header"><div><p className="eyebrow">01 / OFFICIAL TABLE</p><h2>Standings</h2></div><button className="panel-link" onClick={() => setActiveView("table")}>Full table <ArrowRight size={14} /></button></div><StandingTable standings={standings} compact /></section><section className="panel activity-panel"><div className="panel-header"><div><p className="eyebrow">02 / LIVE FEED</p><h2>Recent activity</h2></div><Activity size={18} className="panel-icon" /></div><ActivityFeed activities={database.activities} news={database.news || []} /></section></div>
             <TeamPerformancePanel performance={teamPerformance} />
+            <FootballMomentsPanel />
             <NewsroomPanel news={database.news || []} archives={database.seasonArchives || []} isAdmin={Boolean(isAdmin)} seasonStatus={database.league.status} seasonReady={seasonReadyToArchive} onRefresh={refreshNewsroom} onArchive={archiveSeason} onCreateSeason={createNextSeason} busy={newsBusy} />
             <section className="panel next-fixtures-panel"><div className="panel-header"><div><p className="eyebrow">03 / NEXT UP</p><h2>Fixture desk</h2></div><button className="panel-link" onClick={() => setActiveView("fixtures")}>See all {database.matches.length} fixtures <ArrowRight size={14} /></button></div><div className="next-fixtures-list">{database.matches.filter((match) => match.status !== "CONFIRMED").slice(0, 3).map((match) => <MatchRow key={match.id} database={database} match={match} user={user} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</div></section>
           </>}
@@ -889,7 +949,7 @@ export default function Home() {
 
           {activeView === "table" && <section className="view-panel"><div className="table-view-grid"><section className="panel full-table-panel"><div className="panel-header"><div><p className="eyebrow">OFFICIAL STANDINGS</p><h2>{database.league.name} table</h2></div><span className="table-updated"><span />Updated live</span></div><StandingTable standings={standings} /></section><aside className="panel golden-boot-panel"><div className="panel-header"><div><p className="eyebrow">PLAYER STATS</p><h2>Golden Boot</h2></div><Trophy size={18} className="panel-icon" /></div><div className="scorer-list">{scorers.slice(0, 6).map((player, index) => <div className="scorer-row" key={`${player.teamId}-${player.playerEmail || player.name}`}><span className="scorer-rank">{String(index + 1).padStart(2, "0")}</span><div className="scorer-avatar">{initials(player.name)}</div><div><strong>{player.name}</strong><small>{player.teamName}</small></div><b>{player.goals}</b></div>)}{!scorers.length && <p className="muted-copy">Goal scorer data will appear after the first confirmed result.</p>}</div></aside></div><PlayerStatsPanel stats={playerStats} /></section>}
 
-          {activeView === "database" && <DatabasePanel database={database} user={user} scorerReviews={scorerReviews} onAnalyzeScorerReviews={analyzeScorerReviews} onApproveScorerReview={approveScorerReview} onRejectScorerReview={rejectScorerReview} scorerReviewBusy={scorerReviewBusy} onUpdateUser={updateUserAccount} userEditBusy={userEditBusy} />}
+          {activeView === "database" && <DatabasePanel database={database} user={user} players={playerRegistry} onRenamePlayer={renamePlayer} playerRenameBusy={playerRenameBusy} scorerReviews={scorerReviews} onAnalyzeScorerReviews={analyzeScorerReviews} onApproveScorerReview={approveScorerReview} onRejectScorerReview={rejectScorerReview} scorerReviewBusy={scorerReviewBusy} onUpdateUser={updateUserAccount} userEditBusy={userEditBusy} />}
           {activeView === "rules" && <RulesPanel rules={database.tiebreakers} isAdmin={isAdmin} onReset={resetRules} />}
         </main>
         <footer className="league-footer"><span><Database size={14} /> Source of truth: confirmed matches</span><span>eLeague Manager · {database.league.season}</span>{useBackend ? <span>Live TiDB records · protected</span> : isAdmin ? <button onClick={resetDatabase}>Reset demo data</button> : <span>Player view · protected</span>}</footer>

@@ -98,10 +98,22 @@ const HUGGING_FACE_CHAT_URL = "https://router.huggingface.co/v1/chat/completions
 const DEFAULT_HUGGING_FACE_MODEL = "Qwen/Qwen3-4B-Instruct-2507";
 const MANUAL_FOOTBALLER_NAME_FALLBACKS: Record<string, string> = {
   "gulit": "Ruud Gullit",
+  "gullit": "Ruud Gullit",
   "del piero": "Alessandro Del Piero",
   "van basten": "Marco van Basten",
   "luis suarez": "Luis Suárez",
+  "zlatan": "Zlatan Ibrahimović",
+  "zlatan ibrahimovic": "Zlatan Ibrahimović",
   "zlatan ibrahimović": "Zlatan Ibrahimović",
+  "messi": "Lionel Messi",
+  "neymar": "Neymar da Silva Santos Júnior",
+  "pele": "Edson Arantes do Nascimento",
+  "pelé": "Edson Arantes do Nascimento",
+  "maradona": "Diego Armando Maradona",
+  "neuer": "Manuel Neuer",
+  "gerrard": "Steven Gerrard",
+  "cr7": "Cristiano Ronaldo",
+  "cristiano": "Cristiano Ronaldo",
 };
 
 type ScorerReviewModelResult = {
@@ -172,7 +184,9 @@ function parseScorerReview(raw: string, submittedName: string, knownPlayers: Arr
   const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
   if (!jsonText) throw new Error("The name-review model did not return JSON.");
   const parsed = JSON.parse(jsonText) as Record<string, unknown>;
-  const suggestedFullName = clipText(String(parsed.suggestedFullName || parsed.suggestedName || submittedName), 120);
+  const conservativeAlias = MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(submittedName)];
+  const modelSuggestion = String(parsed.suggestedFullName || parsed.suggestedName || submittedName);
+  const suggestedFullName = clipText(conservativeAlias || modelSuggestion, 120);
   if (!suggestedFullName) throw new Error("The name-review model returned an empty name.");
   let confidence = Number(parsed.confidence);
   if (!Number.isFinite(confidence)) confidence = 0;
@@ -600,6 +614,95 @@ app.post("/api/admin/seasons/:seasonId/complete", asyncRoute(async (request, res
   await query(`INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
     VALUES (:email, 'ARCHIVE_SEASON', 'season', :seasonId, JSON_OBJECT('archived', :archived), :now)`, { email: user.email, seasonId: String(seasonId), archived: result.archived ? 1 : 0, now: Date.now() });
   response.json(result);
+}));
+
+type PlayerRegistryRow = {
+  team_id: number;
+  team_name: string;
+  short_code: string;
+  accent: string;
+  scorer_name: string;
+  player_email: string | null;
+  total_goals: number;
+  official_goals: number;
+};
+
+async function playerRegistryRows() {
+  return query<PlayerRegistryRow[]>(
+    `SELECT g.team_id, t.name AS team_name, t.short_code, t.accent,
+            g.scorer_name, g.player_email,
+            COUNT(*) AS total_goals,
+            SUM(CASE WHEN m.status = 'CONFIRMED' THEN 1 ELSE 0 END) AS official_goals
+       FROM goals g
+       JOIN teams t ON t.id = g.team_id
+       JOIN matches m ON m.id = g.match_id
+      GROUP BY g.team_id, t.name, t.short_code, t.accent, g.scorer_name, g.player_email
+      ORDER BY t.name, official_goals DESC, total_goals DESC, g.scorer_name`,
+  );
+}
+
+app.get("/api/admin/players", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  response.json({ players: await playerRegistryRows() });
+}));
+
+app.patch("/api/admin/players/rename", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const teamId = Number(request.body?.teamId);
+  const oldName = clipText(String(request.body?.oldName || ""), 120);
+  const newName = clipText(String(request.body?.newName || ""), 120);
+  const playerEmail = typeof request.body?.playerEmail === "string" && request.body.playerEmail.trim() ? request.body.playerEmail.trim().toLowerCase() : null;
+  if (!Number.isInteger(teamId) || teamId <= 0 || !oldName || !newName) {
+    response.status(400).json({ error: "INVALID_PLAYER_RENAME", message: "Choose a team and enter both the existing and new player name." });
+    return;
+  }
+  if (normalizeName(oldName) === normalizeName(newName)) {
+    response.status(400).json({ error: "NAME_UNCHANGED", message: "Enter a different player name before saving." });
+    return;
+  }
+  const teamRows = await query<Array<{ id: number; name: string }>>("SELECT id, name FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+  if (!teamRows[0]) {
+    response.status(404).json({ error: "TEAM_NOT_FOUND", message: "That team no longer exists." });
+    return;
+  }
+  const matchFilter = playerEmail ? "AND g.player_email = :playerEmail" : "AND (g.player_email IS NULL OR g.player_email = '')";
+  const countRows = await query<Array<{ total: number }>>(
+    `SELECT COUNT(*) AS total FROM goals g
+      WHERE g.team_id = :teamId AND g.scorer_name = :oldName ${matchFilter}`,
+    { teamId, oldName, playerEmail },
+  );
+  const goalCount = Number(countRows[0]?.total || 0);
+  if (!goalCount) {
+    response.status(404).json({ error: "PLAYER_NOT_FOUND", message: "No matching scorer records were found for that team." });
+    return;
+  }
+  const now = Date.now();
+  await ensureScorerReviewTable();
+  await withTransaction(async (connection) => {
+    await connection.query({
+      sql: `UPDATE scorer_name_reviews r
+               JOIN goals g ON g.id = r.goal_id
+              SET r.submitted_name = :newName,
+                  r.approved_name = CASE WHEN r.status = 'APPROVED' THEN :newName ELSE r.approved_name END,
+                  r.updated_at = :now
+            WHERE g.team_id = :teamId AND g.scorer_name = :oldName ${playerEmail ? "AND g.player_email = :playerEmail" : "AND (g.player_email IS NULL OR g.player_email = '')"}`,
+      namedPlaceholders: true,
+    }, { teamId, oldName, newName, playerEmail, now } as any);
+    await connection.query({
+      sql: `UPDATE goals SET scorer_name = :newName
+              WHERE team_id = :teamId AND scorer_name = :oldName ${playerEmail ? "AND player_email = :playerEmail" : "AND (player_email IS NULL OR player_email = '')"}`,
+      namedPlaceholders: true,
+    }, { teamId, oldName, newName, playerEmail } as any);
+    await connection.query({
+      sql: `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+            VALUES (:email, 'RENAME_PLAYER', 'team', :teamId,
+                    JSON_OBJECT('oldName', :oldName, 'newName', :newName, 'playerEmail', COALESCE(:playerEmail, ''), 'goalCount', :goalCount), :now)`,
+      namedPlaceholders: true,
+    }, { email: user.email, teamId: String(teamId), oldName, newName, playerEmail, goalCount, now } as any);
+  });
+  response.json({ ok: true, updated: goalCount, teamId, oldName, newName, players: await playerRegistryRows() });
 }));
 
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
