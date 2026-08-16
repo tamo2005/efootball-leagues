@@ -1427,3 +1427,30 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
   .news-story-card { padding: 13px; }
   .news-story-meta { align-items: flex-start; flex-direction: column; }
 }
+
+
+/* Admin-editable scorer full-name controls */
+.scorer-edit-field { min-width: 0; }
+.scorer-edit-field input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 9px 11px;
+  border: 1px solid #c9d8cc;
+  border-radius: 7px;
+  outline: none;
+  background: #fff;
+  color: #315d42;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+}
+.scorer-edit-field input:focus { border-color: #7da98a; box-shadow: 0 0 0 3px rgba(125, 169, 138, .16); }
+.scorer-edit-field input::placeholder { color: #9eaaa3; font-family: "DM Sans", sans-serif; font-size: 11px; font-weight: 500; letter-spacing: 0; }
+.scorer-review-actions { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 740px) {
+  .scorer-edit-field input { min-height: 42px; font-size: 15px; }
+  .scorer-review-actions { justify-content: stretch; }
+}
