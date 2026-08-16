@@ -30,6 +30,7 @@ export type UserAccount = {
   teamId?: string;
   passwordHash: string;
   active: boolean;
+  status?: "ACTIVE" | "INVITED" | "DISABLED";
 };
 
 export type Goal = {

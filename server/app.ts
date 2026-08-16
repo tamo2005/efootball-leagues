@@ -843,8 +843,10 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
   }
   const name = String(request.body?.name || "").trim();
   const shortCode = String(request.body?.shortCode || "").trim().toUpperCase();
-  if (!name || !shortCode) {
-    response.status(400).json({ error: "INVALID_TEAM_UPDATE", message: "Team name and team code are required." });
+  const managerName = String(request.body?.managerName || "").trim();
+  const accent = String(request.body?.accent || "#9DD36A").trim();
+  if (!name || !shortCode || !managerName) {
+    response.status(400).json({ error: "INVALID_TEAM_UPDATE", message: "Team name, team code, and manager name are required." });
     return;
   }
   if (name.length > 120) {
@@ -855,7 +857,11 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
     response.status(400).json({ error: "INVALID_TEAM_CODE", message: "Team code must contain 2 to 12 letters or numbers." });
     return;
   }
-  const teamRows = await query<Array<{ id: number; name: string; short_code: string }>>("SELECT id, name, short_code FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+  if (managerName.length > 120 || !/^#[0-9A-Fa-f]{6}$/.test(accent)) {
+    response.status(400).json({ error: "INVALID_TEAM_STYLE", message: "Manager name must be 120 characters or fewer and accent must be a six-digit hex color." });
+    return;
+  }
+  const teamRows = await query<Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string }>>("SELECT id, name, short_code, manager_name, accent FROM teams WHERE id = :teamId LIMIT 1", { teamId });
   const current = teamRows[0];
   if (!current) {
     response.status(404).json({ error: "TEAM_NOT_FOUND", message: "That team no longer exists." });
@@ -875,18 +881,18 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
     response.status(409).json({ error: "TEAM_CODE_IN_USE", message: "That team code already exists. Choose a different code." });
     return;
   }
-  if (current.name === name && current.short_code === shortCode) {
-    response.json({ teamId, name, shortCode, updated: false });
+  if (current.name === name && current.short_code === shortCode && current.manager_name === managerName && current.accent === accent) {
+    response.json({ teamId, name, shortCode, managerName, accent, updated: false });
     return;
   }
   const now = Date.now();
   try {
     await withTransaction(async (connection) => {
-      await connection.execute("UPDATE teams SET name = ?, short_code = ? WHERE id = ?", [name, shortCode, teamId]);
+      await connection.execute("UPDATE teams SET name = ?, short_code = ?, manager_name = ?, accent = ? WHERE id = ?", [name, shortCode, managerName, accent, teamId]);
       await connection.execute(
         `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
-         VALUES (?, 'TEAM_UPDATED', 'team', ?, JSON_OBJECT('oldName', ?, 'newName', ?, 'oldShortCode', ?, 'newShortCode', ?), ?)`,
-        [user.email, String(teamId), current.name, name, current.short_code, shortCode, now],
+         VALUES (?, 'TEAM_UPDATED', 'team', ?, JSON_OBJECT('oldName', ?, 'newName', ?, 'oldShortCode', ?, 'newShortCode', ?, 'oldManagerName', ?, 'newManagerName', ?, 'oldAccent', ?, 'newAccent', ?), ?)`,
+        [user.email, String(teamId), current.name, name, current.short_code, shortCode, current.manager_name, managerName, current.accent, accent, now],
       );
     });
   } catch (error) {
@@ -894,7 +900,7 @@ app.patch("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
     if (conflict) throw conflict;
     throw error;
   }
-  response.json({ teamId, name, shortCode, updated: true });
+  response.json({ teamId, name, shortCode, managerName, accent, updated: true });
 }));
 
 app.delete("/api/admin/teams/:teamId", asyncRoute(async (request, response) => {
@@ -999,6 +1005,55 @@ app.post("/api/admin/users", asyncRoute(async (request, response) => {
     );
   });
   response.status(201).json({ user: await findUserByEmail(email) });
+}));
+
+app.patch("/api/admin/users/:email", asyncRoute(async (request, response) => {
+  const actor = requireAdmin(request, response);
+  if (!actor) return;
+  const email = decodeURIComponent(String(request.params.email || "")).trim().toLowerCase();
+  const displayName = clipText(String(request.body?.displayName || "").trim(), 120);
+  const role = request.body?.role === "admin" ? "admin" : request.body?.role === "player" ? "player" : "";
+  const status = ["ACTIVE", "INVITED", "DISABLED"].includes(String(request.body?.status)) ? String(request.body.status) : "";
+  const rawTeamId = request.body?.teamId;
+  const teamId = rawTeamId === null || rawTeamId === undefined || rawTeamId === "" ? null : Number(rawTeamId);
+  if (!email.includes("@") || !displayName || !role || !status || (teamId !== null && (!Number.isInteger(teamId) || teamId <= 0))) {
+    response.status(400).json({ error: "INVALID_USER_UPDATE", message: "Provide a display name, valid role, status, and team assignment." });
+    return;
+  }
+  if (email === actor.email && (role !== "admin" || status !== "ACTIVE")) {
+    response.status(400).json({ error: "SELF_LOCKOUT_BLOCKED", message: "You cannot remove your own active admin access." });
+    return;
+  }
+  const existingRows = await query<Array<{ email: string; display_name: string; role: string; status: string }>>(
+    "SELECT email, display_name, role, status FROM users WHERE email = :email LIMIT 1",
+    { email },
+  );
+  const existing = existingRows[0];
+  if (!existing) {
+    response.status(404).json({ error: "USER_NOT_FOUND", message: "That player account no longer exists." });
+    return;
+  }
+  if (role === "player" && teamId !== null) {
+    const teamRows = await query<Array<{ id: number; status: string }>>("SELECT id, status FROM teams WHERE id = :teamId LIMIT 1", { teamId });
+    if (!teamRows[0] || teamRows[0].status === "REJECTED") {
+      response.status(400).json({ error: "INVALID_TEAM_ASSIGNMENT", message: "Assign the player to an existing non-rejected team." });
+      return;
+    }
+  }
+  const now = Date.now();
+  await withTransaction(async (connection) => {
+    await connection.execute("UPDATE users SET display_name = ?, role = ?, status = ?, updated_at = ? WHERE email = ?", [displayName, role, status, now, email]);
+    await connection.execute("DELETE FROM team_memberships WHERE user_email = ?", [email]);
+    if (role === "player" && teamId !== null) {
+      await connection.execute("INSERT INTO team_memberships (user_email, team_id, membership_role, created_at) VALUES (?, ?, 'PLAYER', ?)", [email, teamId, now]);
+    }
+    await connection.execute(
+      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+       VALUES (?, 'UPDATE_USER', 'user', ?, JSON_OBJECT('displayName', ?, 'role', ?, 'status', ?, 'teamId', ?), ?)`,
+      [actor.email, email, displayName, role, status, teamId, now],
+    );
+  });
+  response.json({ user: await findUserByEmail(email) });
 }));
 
 app.post("/api/admin/seasons", asyncRoute(async (request, response) => {

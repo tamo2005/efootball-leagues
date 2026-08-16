@@ -69,6 +69,7 @@ export function toLocalUser(user: BackendUser) {
     teamId: user.teamId === null ? undefined : String(user.teamId),
     passwordHash: "",
     active: user.status === "ACTIVE",
+    status: user.status,
   };
 }
 
@@ -258,12 +259,20 @@ export function backendResetTournament(seasonId: number) {
   return request<{ seasonId: number; deletedMatches: number; status: string }>(`/api/admin/seasons/${seasonId}/reset`, { method: "POST" });
 }
 
-export function backendUpdateTeam(teamId: string, name: string, shortCode: string) {
-  return request<{ teamId: number; name: string; shortCode: string; updated: boolean }>(`/api/admin/teams/${teamId}`, {
+export function backendUpdateTeam(teamId: string, name: string, shortCode: string, managerName?: string, accent?: string) {
+  return request<{ teamId: number; name: string; shortCode: string; managerName?: string; accent?: string; updated: boolean }>(`/api/admin/teams/${teamId}`, {
     method: "PATCH",
-    body: JSON.stringify({ name, shortCode }),
+    body: JSON.stringify({ name, shortCode, ...(managerName === undefined ? {} : { managerName }), ...(accent === undefined ? {} : { accent }) }),
   });
 }
+
+export function backendUpdateUser(email: string, payload: { displayName: string; role: "admin" | "player"; status: "ACTIVE" | "INVITED" | "DISABLED"; teamId: number | null }) {
+  return request<{ user: BackendUser }>(`/api/admin/users/${encodeURIComponent(email)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 
 export function backendDeleteTeam(teamId: string) {
   return request<{ teamId: number; deleted: true }>(`/api/admin/teams/${teamId}`, { method: "DELETE" });
