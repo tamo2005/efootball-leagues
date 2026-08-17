@@ -174,16 +174,40 @@ function clipText(value: string, length: number) {
 }
 
 function modelContent(payload: unknown) {
-  const message = (payload as { choices?: Array<{ message?: { content?: unknown } }> } | null)?.choices?.[0]?.message?.content;
+  const candidate = payload && typeof payload === "object"
+    ? payload as {
+        choices?: Array<{ message?: { content?: unknown }; text?: unknown }>;
+        generated_text?: unknown;
+        suggestedFullName?: unknown;
+        suggestedName?: unknown;
+      }
+    : null;
+  if (typeof candidate?.generated_text === "string") return candidate.generated_text;
+  if (typeof candidate?.suggestedFullName === "string" || typeof candidate?.suggestedName === "string") return JSON.stringify(candidate);
+  const choice = candidate?.choices?.[0];
+  const message = choice?.message?.content;
   if (typeof message === "string") return message;
-  if (Array.isArray(message)) return message.map((part) => typeof part === "string" ? part : String((part as { text?: unknown }).text || "")).join("");
-  return "";
+  if (Array.isArray(message)) {
+    return message.map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object") return String((part as { text?: unknown }).text || "");
+      return "";
+    }).join("");
+  }
+  if (message && typeof message === "object") return JSON.stringify(message);
+  return typeof choice?.text === "string" ? choice.text : "";
 }
 
 function parseScorerReview(raw: string, submittedName: string, knownPlayers: Array<{ email: string; displayName: string }>): ScorerReviewModelResult {
-  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
+  const fencedJson = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || raw;
+  const jsonText = fencedJson.match(/\{[\s\S]*\}/)?.[0];
   if (!jsonText) throw new Error("The name-review model did not return JSON.");
-  const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(jsonText) as Record<string, unknown>;
+  } catch {
+    throw new Error("The name-review model returned malformed JSON.");
+  }
   const conservativeAlias = MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(submittedName)];
   const modelSuggestion = String(parsed.suggestedFullName || parsed.suggestedName || submittedName);
   const suggestedFullName = clipText(conservativeAlias || modelSuggestion, 120);
@@ -201,6 +225,47 @@ function parseScorerReview(raw: string, submittedName: string, knownPlayers: Arr
     reason: clipText(String(parsed.reason || "Name normalized for admin review."), 255),
     matchedEmail: matchedPlayer?.email || null,
     needsManualReview: parsed.needsManualReview !== false || !matchedPlayer,
+  };
+}
+
+function localScorerReviewResult(submittedName: string, knownPlayers: Array<{ email: string; displayName: string }>, previousNames: string[]): ScorerReviewModelResult {
+  const normalized = normalizeName(submittedName);
+  const exactPlayer = knownPlayers.find((player) => normalizeName(player.displayName) === normalized);
+  if (exactPlayer) {
+    return {
+      suggestedFullName: clipText(exactPlayer.displayName, 120),
+      confidence: 1,
+      reason: "Matched the submitted name to an active player on this team’s roster.",
+      matchedEmail: exactPlayer.email,
+      needsManualReview: true,
+    };
+  }
+  const alias = MANUAL_FOOTBALLER_NAME_FALLBACKS[normalized];
+  if (alias) {
+    return {
+      suggestedFullName: alias,
+      confidence: 0.85,
+      reason: "Applied a conservative footballer-name alias. Confirm the team identity before approving.",
+      matchedEmail: null,
+      needsManualReview: true,
+    };
+  }
+  const previous = previousNames.find((name) => normalizeName(name) === normalized);
+  if (previous) {
+    return {
+      suggestedFullName: clipText(previous, 120),
+      confidence: 0.75,
+      reason: "Matched the submitted name to a previous scorer name recorded for this team.",
+      matchedEmail: null,
+      needsManualReview: true,
+    };
+  }
+  return {
+    suggestedFullName: clipText(submittedName, 120),
+    confidence: 0,
+    reason: "No confident local match was found. Edit the full name manually or retry AI analysis.",
+    matchedEmail: null,
+    needsManualReview: true,
   };
 }
 
@@ -227,13 +292,25 @@ async function processScorerNameReview(reviewId: number) {
       ORDER BY g.scorer_name LIMIT 100`,
     { teamId: review.team_id, goalId: review.goal_id || 0 },
   );
+  const localFallback = localScorerReviewResult(review.submitted_name, knownPlayers.map((player) => ({ email: player.email, displayName: player.display_name })), previousNames.map((item) => item.scorer_name));
   const config = huggingFaceConfig();
   if (!config) {
     await query(
-      `UPDATE scorer_name_reviews SET status = 'FAILED', error_message = :message, updated_at = :now WHERE id = :reviewId`,
-      { reviewId, message: "Hugging Face is not configured yet. Add HF_TOKEN in Vercel to analyze names.", now: Date.now() },
+      `UPDATE scorer_name_reviews
+          SET suggested_name = :suggestedName, confidence = :confidence,
+              reason = :reason, matched_email = :matchedEmail, status = 'PENDING',
+              model = 'local-conservative-fallback', error_message = NULL, updated_at = :now
+        WHERE id = :reviewId`,
+      {
+        reviewId,
+        suggestedName: localFallback.suggestedFullName,
+        confidence: localFallback.confidence,
+        reason: `${localFallback.reason} Hugging Face is not configured, so this suggestion was generated locally.`,
+        matchedEmail: localFallback.matchedEmail,
+        now: Date.now(),
+      },
     );
-    return { reviewId, status: "FAILED" as const };
+    return { reviewId, status: "PENDING" as const };
   }
   const playerContext = knownPlayers.map((player) => `${player.display_name} <${player.email}>`).join("\\n") || "No registered players yet.";
   const previousContext = previousNames.map((item) => item.scorer_name).join(", ") || "No previous scorer names yet.";
@@ -251,7 +328,7 @@ async function processScorerNameReview(reviewId: number) {
     `Previous scorer names for this team: ${previousContext}`,
   ].join("\\n\\n");
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 7000);
+  const timeout = setTimeout(() => controller.abort(), 8500);
   try {
     const modelResponse = await fetch(HUGGING_FACE_CHAT_URL, {
       method: "POST",
@@ -261,7 +338,7 @@ async function processScorerNameReview(reviewId: number) {
     });
     const payload = await modelResponse.json().catch(() => null);
     if (modelResponse.status === 402) {
-      const fallbackName = clipText(MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(review.submitted_name)] || review.submitted_name, 120);
+      const fallbackName = localFallback.suggestedFullName;
       await query(
         `UPDATE scorer_name_reviews
             SET suggested_name = :suggestedName, confidence = :confidence,
@@ -272,7 +349,7 @@ async function processScorerNameReview(reviewId: number) {
           reviewId,
           suggestedName: fallbackName,
           confidence: 0.5,
-          reason: "Hugging Face credits are temporarily unavailable (HTTP 402). The submitted name is retained as a manual-review suggestion; approve it only if it is correct.",
+          reason: `Hugging Face credits are temporarily unavailable (HTTP 402). ${localFallback.reason} Approve it only if it is correct.`,
           model: `${config.model} · manual fallback`,
           now: Date.now(),
         },
