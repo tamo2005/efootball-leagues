@@ -487,11 +487,12 @@ async function refreshLeagueNews(seasonId) {
       VALUES (:seasonId, :storyDate, :storyType, :storyKey, :headline, :description, :dataJson, :evidenceJson, :signature, :model, :now, :now)
       ON DUPLICATE KEY UPDATE headline = VALUES(headline), description = VALUES(description), data_json = VALUES(data_json), evidence_json = VALUES(evidence_json), evidence_signature = VALUES(evidence_signature), model = VALUES(model), generated_at = VALUES(generated_at), updated_at = VALUES(updated_at)`, { seasonId, storyDate: evidence.asOfDate, storyType: story.storyType, storyKey: `${seasonId}:${evidence.asOfDate}:${story.storyType}`, headline: story.headline, description: story.description, dataJson, evidenceJson, signature, model, now });
   }
-  return { generated: generated.length, stories: await getNewsRows() };
+  return { generated: generated.length, storyDate: evidence.asOfDate, stories: await getNewsRows(seasonId) };
 }
-async function getNewsRows() {
+async function getNewsRows(seasonId) {
   await ensureNewsTables();
-  return query("SELECT id, season_id, story_date, story_type, headline, description, data_json, evidence_json, model, generated_at FROM league_news ORDER BY generated_at DESC, id DESC LIMIT 50", {});
+  const seasonFilter = seasonId === void 0 ? "" : "WHERE season_id = :seasonId AND story_date = (SELECT MAX(latest.story_date) FROM league_news latest WHERE latest.season_id = :latestSeasonId)";
+  return query(`SELECT id, season_id, story_date, story_type, headline, description, data_json, evidence_json, model, generated_at FROM league_news ${seasonFilter} ORDER BY story_date DESC, generated_at DESC, id DESC LIMIT 50`, seasonId === void 0 ? {} : { seasonId, latestSeasonId: seasonId });
 }
 async function getArchiveRows() {
   await ensureNewsTables();
@@ -1151,6 +1152,195 @@ app.patch("/api/admin/players/rename", asyncRoute(async (request, response) => {
   });
   response.json({ ok: true, updated: goalCount, teamId, oldName, newName, players: await playerRegistryRows() });
 }));
+function emailEscape(value) {
+  return String(value ?? "").replace(/[&<>\"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+}
+function emailColor(value, fallback) {
+  const candidate = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(candidate) ? candidate : fallback;
+}
+function emailDateLabel(timestamp) {
+  return new Intl.DateTimeFormat("en-IN", { timeZone: LEAGUE_TIME_ZONE2, weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date(timestamp));
+}
+function emailTimeLabel(timestamp) {
+  return new Intl.DateTimeFormat("en-IN", { timeZone: LEAGUE_TIME_ZONE2, hour: "numeric", minute: "2-digit", hour12: true }).format(new Date(timestamp));
+}
+function notificationSender() {
+  const email = process.env.RESEND_FROM_EMAIL?.trim() || "peleefootball07@gmail.com";
+  const name = process.env.RESEND_FROM_NAME?.trim() || "League'de Khalpar Matchday";
+  return `${name} <${email}>`;
+}
+function notificationProvider() {
+  return { apiKey: process.env.RESEND_API_KEY?.trim() || "", from: notificationSender() };
+}
+function notificationStandings(teams, confirmedMatches) {
+  const base = calculateStandings(teams, confirmedMatches);
+  const cleanSheets = /* @__PURE__ */ new Map();
+  for (const match of confirmedMatches) {
+    if (match.awayScore === 0) cleanSheets.set(match.homeTeamId, (cleanSheets.get(match.homeTeamId) || 0) + 1);
+    if (match.homeScore === 0) cleanSheets.set(match.awayTeamId, (cleanSheets.get(match.awayTeamId) || 0) + 1);
+  }
+  return new Map(base.map((row) => [row.teamId, { ...row, cleanSheets: cleanSheets.get(row.teamId) || 0 }]));
+}
+async function buildNextFixtureNotifications() {
+  const seasonRows = await query("SELECT id, name, status FROM seasons WHERE status IN ('ACTIVE', 'DRAFT') ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
+  const season = seasonRows[0];
+  if (!season) throw new ApiError(404, "SEASON_NOT_FOUND", "Create or start a season before sending match notifications.");
+  const teams = await query("SELECT id, name, short_code, accent FROM teams ORDER BY name");
+  const rawFixtures = await query(
+    `SELECT m.id, m.matchday, m.kickoff_at, m.original_kickoff_at, m.status,
+            h.id AS home_team_id, h.name AS home_team_name, h.short_code AS home_short_code, h.accent AS home_accent,
+            a.id AS away_team_id, a.name AS away_team_name, a.short_code AS away_short_code, a.accent AS away_accent
+       FROM matches m
+       JOIN teams h ON h.id = m.home_team_id
+       JOIN teams a ON a.id = m.away_team_id
+      WHERE m.season_id = :seasonId AND m.status IN ('SCHEDULED', 'POSTPONED')
+      ORDER BY m.kickoff_at, m.id`,
+    { seasonId: season.id }
+  );
+  const fixtures = attachMatchdayDates(rawFixtures);
+  const confirmed = await query(
+    "SELECT home_team_id, away_team_id, home_score, away_score FROM matches WHERE season_id = :seasonId AND status = 'CONFIRMED'",
+    { seasonId: season.id }
+  );
+  const teamModels = teams.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code }));
+  const standingMap = notificationStandings(teamModels, confirmed.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: Number(match.home_score), awayScore: Number(match.away_score) })));
+  const users = await query(
+    `SELECT u.email, u.display_name, tm.team_id
+       FROM users u
+       JOIN team_memberships tm ON tm.user_email = u.email
+      WHERE u.role = 'player' AND u.status = 'ACTIVE'
+      ORDER BY u.display_name`
+  );
+  const recipientsByTeam = /* @__PURE__ */ new Map();
+  for (const user of users) {
+    if (!user.team_id) continue;
+    const recipients = recipientsByTeam.get(Number(user.team_id)) || [];
+    recipients.push({ email: user.email, displayName: user.display_name });
+    recipientsByTeam.set(Number(user.team_id), recipients);
+  }
+  const nextFixtureByTeam = /* @__PURE__ */ new Map();
+  for (const fixture of fixtures) {
+    const homeTeamId = Number(fixture.home_team_id);
+    const awayTeamId = Number(fixture.away_team_id);
+    if (!nextFixtureByTeam.has(homeTeamId)) nextFixtureByTeam.set(homeTeamId, fixture);
+    if (!nextFixtureByTeam.has(awayTeamId)) nextFixtureByTeam.set(awayTeamId, fixture);
+  }
+  const teamById = new Map(teams.map((team) => [Number(team.id), team]));
+  const notifications = [];
+  for (const [teamId, fixture] of nextFixtureByTeam) {
+    const team = teamById.get(teamId);
+    if (!team) continue;
+    const isHome = Number(fixture.home_team_id) === teamId;
+    const opponentId = isHome ? Number(fixture.away_team_id) : Number(fixture.home_team_id);
+    const opponent = teamById.get(opponentId);
+    const table = standingMap.get(teamId);
+    const opponentTable = standingMap.get(opponentId);
+    if (!opponent || !table || !opponentTable) continue;
+    const kickoffAt = Number(fixture.kickoff_at);
+    notifications.push({
+      teamId,
+      teamName: team.name,
+      teamShortCode: team.short_code,
+      teamAccent: emailColor(team.accent, "#8b1e3f"),
+      recipients: recipientsByTeam.get(teamId) || [],
+      fixture: {
+        id: Number(fixture.id),
+        matchday: Number(fixture.matchday),
+        matchDate: String(fixture.match_date || leagueDateKey2(kickoffAt)),
+        kickoffAt,
+        status: String(fixture.status),
+        isHome,
+        opponent: { id: opponent.id, name: opponent.name, shortCode: opponent.short_code, accent: emailColor(opponent.accent, "#0d1a21") }
+      },
+      table,
+      opponentTable
+    });
+  }
+  notifications.sort((a, b) => a.fixture.matchday - b.fixture.matchday || a.teamName.localeCompare(b.teamName));
+  return { seasonId: Number(season.id), seasonName: season.name, from: notificationSender(), providerConfigured: Boolean(notificationProvider().apiKey), notifications, sent: 0, skipped: notifications.filter((item) => !item.recipients.length).length, failed: [] };
+}
+function notificationHtml(notification) {
+  const team = emailEscape(notification.teamName);
+  const opponent = emailEscape(notification.fixture.opponent.name);
+  const teamColor = emailColor(notification.teamAccent, "#8b1e3f");
+  const opponentColor = emailColor(notification.fixture.opponent.accent, "#0d1a21");
+  const matchLabel = `Matchday ${notification.fixture.matchday}`;
+  const venueLabel = notification.fixture.isHome ? "Home fixture" : "Away fixture";
+  const table = notification.table;
+  const opponentTable = notification.opponentTable;
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body style="margin:0;background:#f3efe7;color:#14222a;font-family:Arial,Helvetica,sans-serif"><div style="padding:28px 12px;background:#f3efe7"><div style="max-width:620px;margin:0 auto;background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 18px 50px rgba(13,26,33,.16)"><div style="padding:28px 30px;background:linear-gradient(135deg,#0d1a21 0%,#172c38 62%,${teamColor} 100%);color:#ffffff"><div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#e0bf72;font-weight:700">LEAGUE'DE KHALPAR \xB7 MATCHDAY ALERT</div><h1 style="margin:12px 0 6px;font-size:30px;line-height:1.08">Your next fixture is locked in.</h1><p style="margin:0;color:#d7e1e5;font-size:15px;line-height:1.6">${team} should prepare for the next scheduled league match.</p></div><div style="padding:26px 30px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#f4e8c8;color:#6d4e16;font-size:11px;letter-spacing:1px;text-transform:uppercase;font-weight:700">${emailEscape(matchLabel)} \xB7 ${emailEscape(venueLabel)}</div><div style="margin:22px 0 12px;text-align:center"><div style="display:inline-block;width:40%;vertical-align:middle;text-align:center"><div style="width:50px;height:50px;margin:0 auto 8px;border-radius:16px;background:${teamColor};color:#fff;line-height:50px;font-weight:800;font-size:16px">${emailEscape(notification.teamShortCode)}</div><div style="font-weight:800;font-size:16px">${team}</div><div style="font-size:12px;color:#7a858a;margin-top:4px">${notification.fixture.isHome ? "HOME" : "AWAY"}</div></div><div style="display:inline-block;width:16%;vertical-align:middle;color:#b08b3c;font-size:20px;font-weight:800">VS</div><div style="display:inline-block;width:40%;vertical-align:middle;text-align:center"><div style="width:50px;height:50px;margin:0 auto 8px;border-radius:16px;background:${opponentColor};color:#fff;line-height:50px;font-weight:800;font-size:16px">${emailEscape(notification.fixture.opponent.shortCode)}</div><div style="font-weight:800;font-size:16px">${opponent}</div><div style="font-size:12px;color:#7a858a;margin-top:4px">${notification.fixture.isHome ? "AWAY" : "HOME"}</div></div></div><div style="padding:16px;border:1px solid #eadfca;border-radius:16px;background:#fffaf0;text-align:center"><div style="font-size:12px;color:#7a858a;text-transform:uppercase;letter-spacing:1px;font-weight:700">Kickoff in league time</div><div style="margin-top:6px;color:#172c38;font-size:20px;font-weight:800">${emailEscape(emailDateLabel(notification.fixture.kickoffAt))}</div><div style="margin-top:3px;color:#8b1e3f;font-size:15px;font-weight:700">${emailEscape(emailTimeLabel(notification.fixture.kickoffAt))} \xB7 IST</div></div><h2 style="margin:26px 0 13px;font-size:18px;color:#172c38">Know the opponent</h2><div style="font-size:14px;color:#526169;line-height:1.7">${opponent} currently sits <strong style="color:#172c38">${opponentTable.rank}${opponentTable.rank === 1 ? "st" : opponentTable.rank === 2 ? "nd" : opponentTable.rank === 3 ? "rd" : "th"}</strong> with <strong style="color:#172c38">${opponentTable.points} points</strong>, a ${opponentTable.wins}-${opponentTable.draws}-${opponentTable.losses} record, and ${opponentTable.cleanSheets} clean sheet${opponentTable.cleanSheets === 1 ? "" : "s"}. Their goal difference is <strong style="color:#172c38">${opponentTable.goalDifference >= 0 ? "+" : ""}${opponentTable.goalDifference}</strong>.</div><h2 style="margin:26px 0 13px;font-size:18px;color:#172c38">Your table snapshot</h2><div style="font-size:0"><div style="display:inline-block;width:48%;margin-right:4%;padding:14px 0;border-top:3px solid ${teamColor};font-size:13px;color:#66747a"><strong style="display:block;color:#172c38;font-size:22px">#${table.rank}</strong>current position</div><div style="display:inline-block;width:48%;padding:14px 0;border-top:3px solid #c7a45a;font-size:13px;color:#66747a"><strong style="display:block;color:#172c38;font-size:22px">${table.points}</strong>points</div><div style="display:inline-block;width:48%;margin-right:4%;padding:14px 0;font-size:13px;color:#66747a"><strong style="display:block;color:#172c38;font-size:18px">${table.played}</strong>played</div><div style="display:inline-block;width:48%;padding:14px 0;font-size:13px;color:#66747a"><strong style="display:block;color:#172c38;font-size:18px">${table.goalsFor}-${table.goalsAgainst}</strong>goals for / against</div></div><div style="margin-top:20px;padding:18px;border-radius:16px;background:#0d1a21;color:#ffffff"><div style="color:#e0bf72;font-size:11px;letter-spacing:1px;text-transform:uppercase;font-weight:700">Matchday checklist</div><p style="margin:10px 0 0;color:#d9e4e8;font-size:14px;line-height:1.65">Play the full 7-minute fixture in regular time, confirm both players are ready, and let the home team submit the final score and goal log after the match.</p></div><a href="https://efootball-leagues-one.vercel.app/" style="display:block;margin-top:22px;padding:15px 18px;border-radius:12px;background:${teamColor};color:#ffffff;text-align:center;text-decoration:none;font-weight:800;font-size:14px">Open eLeague fixtures</a></div><div style="padding:18px 30px;background:#f8f5ef;color:#7c878b;font-size:11px;line-height:1.6">This matchday reminder was sent by the league administrator. The schedule and table snapshot reflect the live eLeague database at the time of sending.</div></div></div></body></html>`;
+}
+function notificationText(notification) {
+  const opponent = notification.fixture.opponent.name;
+  const table = notification.table;
+  const opponentTable = notification.opponentTable;
+  return `${notification.teamName} next fixture
+
+Matchday ${notification.fixture.matchday}: ${notification.teamName} ${notification.fixture.isHome ? "vs" : "at"} ${opponent}
+${emailDateLabel(notification.fixture.kickoffAt)} \xB7 ${emailTimeLabel(notification.fixture.kickoffAt)} IST
+
+Opponent snapshot: ${opponent} are ${opponentTable.rank}${opponentTable.rank === 1 ? "st" : opponentTable.rank === 2 ? "nd" : opponentTable.rank === 3 ? "rd" : "th"} with ${opponentTable.points} points, a ${opponentTable.wins}-${opponentTable.draws}-${opponentTable.losses} record, ${opponentTable.cleanSheets} clean sheets, and ${opponentTable.goalDifference >= 0 ? "+" : ""}${opponentTable.goalDifference} goal difference.
+
+Your table position: #${table.rank} with ${table.points} points from ${table.played} matches.
+
+Play the full 7-minute fixture in regular time. The home team submits the final score and goal log after both players are ready.
+
+Open fixtures: https://efootball-leagues-one.vercel.app/`;
+}
+async function sendNextFixtureNotifications(actorEmail) {
+  const snapshot = await buildNextFixtureNotifications();
+  const provider = notificationProvider();
+  if (!provider.apiKey) throw new ApiError(503, "EMAIL_PROVIDER_NOT_CONFIGURED", "Preview is ready, but RESEND_API_KEY is not configured in the production environment.");
+  const messages = snapshot.notifications.filter((notification) => notification.recipients.length).map((notification) => ({
+    from: provider.from,
+    to: notification.recipients.map((recipient) => recipient.email),
+    subject: `Matchday ${notification.fixture.matchday} next up: ${notification.teamShortCode} vs ${notification.fixture.opponent.shortCode}`,
+    html: notificationHtml(notification),
+    text: notificationText(notification)
+  }));
+  if (!messages.length) {
+    throw new ApiError(409, "NO_NOTIFICATION_RECIPIENTS", "No active player accounts are assigned to teams with a next fixture.");
+  }
+  const fixtureKey = snapshot.notifications.map((notification) => `${notification.teamId}:${notification.fixture.id}`).join("|").slice(0, 180);
+  const resendResponse = await fetch("https://api.resend.com/emails/batch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${provider.apiKey}`, "Content-Type": "application/json", "Idempotency-Key": `eleague-next-fixtures-${snapshot.seasonId}-${leagueDateKey2()}-${fixtureKey}`.slice(0, 256) },
+    body: JSON.stringify(messages)
+  });
+  const raw = await resendResponse.text();
+  if (!resendResponse.ok) {
+    let detail = raw;
+    try {
+      detail = String(JSON.parse(raw).message || JSON.parse(raw).error || raw);
+    } catch {
+    }
+    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `Resend could not deliver the match notifications: ${detail.slice(0, 220)}`);
+  }
+  const result = await withTransaction(async (connection) => {
+    await connection.query({
+      sql: `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+            VALUES (:email, 'NOTIFY_NEXT_FIXTURES', 'season', :seasonId,
+                    JSON_OBJECT('sentTeams', :sentTeams, 'skippedTeams', :skippedTeams, 'fixtureKey', :fixtureKey, 'provider', 'resend'), :now)`,
+      namedPlaceholders: true
+    }, { email: actorEmail, seasonId: String(snapshot.seasonId), sentTeams: messages.length, skippedTeams: snapshot.skipped, fixtureKey, now: Date.now() });
+    return { sent: messages.length };
+  });
+  return { ...snapshot, sent: result.sent };
+}
+app.get("/api/admin/notifications/next-fixtures", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const snapshot = await buildNextFixtureNotifications();
+  response.setHeader("Cache-Control", "no-store, max-age=0");
+  response.json(snapshot);
+}));
+app.post("/api/admin/notifications/next-fixtures", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  response.setHeader("Cache-Control", "no-store, max-age=0");
+  response.json(await sendNextFixtureNotifications(user.email));
+}));
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
@@ -1196,8 +1386,9 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       ORDER BY goals DESC, g.scorer_name`
   );
   const scorerReviews = user.role === "admin" ? (await backfillScorerReviewRecords(), await scorerReviewRows()) : [];
-  const news = await getNewsRows();
+  const news = await getNewsRows(season?.id === void 0 ? void 0 : Number(season.id));
   const seasonArchives = await getArchiveRows();
+  response.setHeader("Cache-Control", "no-store, max-age=0");
   response.json({
     season,
     teams,
