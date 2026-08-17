@@ -755,13 +755,17 @@ function emailTimeLabel(timestamp: number) {
 }
 
 function notificationSender() {
-  const email = process.env.RESEND_FROM_EMAIL?.trim() || "peleefootball07@gmail.com";
-  const name = process.env.RESEND_FROM_NAME?.trim() || "League'de Khalpar Matchday";
+  const email = process.env.GMAIL_SENDER_EMAIL?.trim() || "peleefootball07@gmail.com";
+  const name = process.env.GMAIL_SENDER_NAME?.trim() || "League'de Khalpar Matchday";
   return `${name} <${email}>`;
 }
 
 function notificationProvider() {
-  return { apiKey: process.env.RESEND_API_KEY?.trim() || "", from: notificationSender() };
+  return {
+    relayUrl: process.env.GMAIL_RELAY_URL?.trim() || "",
+    relaySecret: process.env.GMAIL_RELAY_SECRET?.trim() || "",
+    from: notificationSender(),
+  };
 }
 
 function notificationStandings(teams: Array<{ id: number; name: string; shortCode: string }>, confirmedMatches: Array<{ homeTeamId: number; awayTeamId: number; homeScore: number; awayScore: number }>) {
@@ -850,7 +854,8 @@ async function buildNextFixtureNotifications() {
     });
   }
   notifications.sort((a, b) => a.fixture.matchday - b.fixture.matchday || a.teamName.localeCompare(b.teamName));
-  return { seasonId: Number(season.id), seasonName: season.name, from: notificationSender(), providerConfigured: Boolean(notificationProvider().apiKey), notifications, sent: 0, skipped: notifications.filter((item) => !item.recipients.length).length, failed: [] as Array<{ email: string; reason: string }> };
+  const provider = notificationProvider();
+  return { seasonId: Number(season.id), seasonName: season.name, from: provider.from, providerConfigured: Boolean(provider.relayUrl && provider.relaySecret), notifications, sent: 0, skipped: notifications.filter((item) => !item.recipients.length).length, failed: [] as Array<{ email: string; reason: string }> };
 }
 
 function notificationHtml(notification: NextFixtureNotification) {
@@ -875,39 +880,54 @@ function notificationText(notification: NextFixtureNotification) {
 async function sendNextFixtureNotifications(actorEmail: string) {
   const snapshot = await buildNextFixtureNotifications();
   const provider = notificationProvider();
-  if (!provider.apiKey) throw new ApiError(503, "EMAIL_PROVIDER_NOT_CONFIGURED", "Preview is ready, but RESEND_API_KEY is not configured in the production environment.");
-  const messages = snapshot.notifications.filter((notification) => notification.recipients.length).map((notification) => ({
-    from: provider.from,
-    to: notification.recipients.map((recipient) => recipient.email),
+  if (!provider.relayUrl || !provider.relaySecret) {
+    throw new ApiError(503, "EMAIL_PROVIDER_NOT_CONFIGURED", "Preview is ready, but the free Gmail relay is not configured. Add GMAIL_RELAY_URL and GMAIL_RELAY_SECRET in Vercel production.");
+  }
+  const messages = snapshot.notifications.filter((notification) => notification.recipients.length).flatMap((notification) => notification.recipients.map((recipient) => ({
+    to: recipient.email,
     subject: `Matchday ${notification.fixture.matchday} next up: ${notification.teamShortCode} vs ${notification.fixture.opponent.shortCode}`,
     html: notificationHtml(notification),
     text: notificationText(notification),
-  }));
+    teamId: notification.teamId,
+    fixtureId: notification.fixture.id,
+  })));
   if (!messages.length) {
     throw new ApiError(409, "NO_NOTIFICATION_RECIPIENTS", "No active player accounts are assigned to teams with a next fixture.");
   }
   const fixtureKey = snapshot.notifications.map((notification) => `${notification.teamId}:${notification.fixture.id}`).join("|").slice(0, 180);
-  const resendResponse = await fetch("https://api.resend.com/emails/batch", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${provider.apiKey}`, "Content-Type": "application/json", "Idempotency-Key": `eleague-next-fixtures-${snapshot.seasonId}-${leagueDateKey()}-${fixtureKey}`.slice(0, 256) },
-    body: JSON.stringify(messages),
-  });
-  const raw = await resendResponse.text();
-  if (!resendResponse.ok) {
-    let detail = raw;
-    try { detail = String((JSON.parse(raw) as { message?: string; error?: string }).message || (JSON.parse(raw) as { error?: string }).error || raw); } catch { /* keep raw response */ }
-    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `Resend could not deliver the match notifications: ${detail.slice(0, 220)}`);
+  const batchId = `eleague-next-fixtures-${snapshot.seasonId}-${leagueDateKey()}-${fixtureKey}`.slice(0, 240);
+  let relayResponse: Response;
+  try {
+    relayResponse = await fetch(provider.relayUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batchId, senderName: provider.from.split(" <")[0], secret: provider.relaySecret, messages }),
+    });
+  } catch (error) {
+    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `The free Gmail relay could not be reached: ${error instanceof Error ? error.message : "network error"}`);
+  }
+  const raw = await relayResponse.text();
+  let relayResult: { ok?: boolean; sent?: number; remainingQuota?: number; failed?: Array<{ email?: string; to?: string; reason?: string }>; message?: string; error?: string } = {};
+  try { relayResult = raw ? JSON.parse(raw) as typeof relayResult : {}; } catch { /* keep empty result for a useful error below */ }
+  const failures = Array.isArray(relayResult.failed) ? relayResult.failed.map((item) => ({ email: String(item.email || item.to || "unknown recipient"), reason: String(item.reason || "Gmail relay rejected the message") })) : [];
+  if (!relayResponse.ok || relayResult.ok === false) {
+    const detail = String(relayResult.message || relayResult.error || raw || relayResponse.statusText || "unknown relay error");
+    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `The free Gmail relay could not deliver the match notifications: ${detail.slice(0, 220)}`);
+  }
+  const sent = Number.isFinite(Number(relayResult.sent)) ? Number(relayResult.sent) : Math.max(0, messages.length - failures.length);
+  if (sent === 0 && failures.length) {
+    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `The free Gmail relay rejected every recipient: ${failures[0].reason}`);
   }
   const result = await withTransaction(async (connection) => {
     await connection.query({
       sql: `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
             VALUES (:email, 'NOTIFY_NEXT_FIXTURES', 'season', :seasonId,
-                    JSON_OBJECT('sentTeams', :sentTeams, 'skippedTeams', :skippedTeams, 'fixtureKey', :fixtureKey, 'provider', 'resend'), :now)`,
+                    JSON_OBJECT('sentRecipients', :sentRecipients, 'failedRecipients', :failedRecipients, 'skippedTeams', :skippedTeams, 'fixtureKey', :fixtureKey, 'batchId', :batchId, 'remainingQuota', :remainingQuota, 'provider', 'gmail_apps_script'), :now)`,
       namedPlaceholders: true,
-    }, { email: actorEmail, seasonId: String(snapshot.seasonId), sentTeams: messages.length, skippedTeams: snapshot.skipped, fixtureKey, now: Date.now() } as any);
-    return { sent: messages.length };
+    }, { email: actorEmail, seasonId: String(snapshot.seasonId), sentRecipients: sent, failedRecipients: failures.length, skippedTeams: snapshot.skipped, fixtureKey, batchId, remainingQuota: String(relayResult.remainingQuota ?? ""), now: Date.now() } as any);
+    return { sent };
   });
-  return { ...snapshot, sent: result.sent };
+  return { ...snapshot, sent: result.sent, failed: failures };
 }
 
 app.get("/api/admin/notifications/next-fixtures", asyncRoute(async (request, response) => {
