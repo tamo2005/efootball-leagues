@@ -223,8 +223,8 @@ export async function refreshLeagueNews(seasonId: number) {
 
 export async function getNewsRows(seasonId?: number) {
   await ensureNewsTables();
-  const seasonFilter = seasonId === undefined ? "" : "WHERE season_id = :seasonId";
-  return query<NewsRow[]>(`SELECT id, season_id, story_date, story_type, headline, description, data_json, evidence_json, model, generated_at FROM league_news ${seasonFilter} ORDER BY story_date DESC, generated_at DESC, id DESC LIMIT 50`, seasonId === undefined ? {} : { seasonId });
+  const seasonFilter = seasonId === undefined ? "" : "WHERE season_id = :seasonId AND story_date = (SELECT MAX(latest.story_date) FROM league_news latest WHERE latest.season_id = :latestSeasonId)";
+  return query<NewsRow[]>(`SELECT id, season_id, story_date, story_type, headline, description, data_json, evidence_json, model, generated_at FROM league_news ${seasonFilter} ORDER BY story_date DESC, generated_at DESC, id DESC LIMIT 50`, seasonId === undefined ? {} : { seasonId, latestSeasonId: seasonId });
 }
 
 export async function getArchiveRows() {
