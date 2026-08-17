@@ -1808,3 +1808,322 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
     transition: none;
   }
 }
+
+/* Matchday mailroom */
+.notification-panel {
+  margin-top: 22px;
+  overflow: hidden;
+}
+
+.notification-panel-header {
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.notification-panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.notification-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 4px 0 18px;
+  padding: 11px 13px;
+  border: 1px solid rgba(199, 164, 90, .28);
+  border-radius: 12px;
+  background: #fffaf0;
+  color: #738087;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notification-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #8b1e3f;
+}
+
+.notification-provider span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d9a441;
+  box-shadow: 0 0 0 4px rgba(217, 164, 65, .12);
+}
+
+.notification-provider.is-ready span {
+  background: #2b9668;
+  box-shadow: 0 0 0 4px rgba(43, 150, 104, .12);
+}
+
+.notification-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.notification-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #e7dfd1;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #fff 0%, #fffaf1 100%);
+  box-shadow: 0 10px 26px rgba(13, 26, 33, .06);
+}
+
+.notification-card-top,
+.notification-fixture-line,
+.notification-kickoff {
+  display: flex;
+  align-items: center;
+}
+
+.notification-card-top {
+  gap: 8px;
+  min-width: 0;
+}
+
+.notification-team-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: var(--notification-accent, #8b1e3f);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .06em;
+}
+
+.notification-matchday,
+.notification-recipient-count {
+  color: #7a858a;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.notification-recipient-count {
+  max-width: 44%;
+  margin-left: auto;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.notification-fixture-line {
+  justify-content: space-between;
+  gap: 12px;
+  margin: 22px 0 14px;
+}
+
+.notification-fixture-line > div {
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.notification-fixture-line > span {
+  flex: 0 0 auto;
+  color: #b08b3c;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.notification-fixture-line strong,
+.notification-fixture-line small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.notification-fixture-line strong {
+  color: #172c38;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.notification-fixture-line small {
+  margin-top: 4px;
+  color: #8b1e3f;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.notification-opponent {
+  text-align: right;
+}
+
+.notification-kickoff {
+  gap: 7px;
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: #f3eee3;
+  color: #526169;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.notification-kickoff svg {
+  flex: 0 0 auto;
+  color: #8b1e3f;
+}
+
+.notification-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 14px;
+  border-top: 1px solid #ece3d5;
+  border-bottom: 1px solid #ece3d5;
+}
+
+.notification-fact-grid > div {
+  min-width: 0;
+  padding: 12px 7px;
+  border-right: 1px solid #ece3d5;
+  text-align: center;
+}
+
+.notification-fact-grid > div:last-child {
+  border-right: 0;
+}
+
+.notification-fact-grid b,
+.notification-fact-grid small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.notification-fact-grid b {
+  color: #172c38;
+  font-size: 15px;
+  line-height: 1.15;
+}
+
+.notification-fact-grid small {
+  margin-top: 5px;
+  color: #849096;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.notification-card-copy,
+.notification-config-note {
+  margin: 14px 0 0;
+  color: #68767c;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.notification-config-note code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: #f3eee3;
+  color: #8b1e3f;
+  font-size: 11px;
+}
+
+.notification-empty {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: 34px 20px;
+  border: 1px dashed #d8cdbd;
+  border-radius: 16px;
+  color: #78858a;
+  text-align: center;
+}
+
+.notification-empty svg {
+  color: #b08b3c;
+}
+
+.notification-empty strong {
+  color: #172c38;
+}
+
+.notification-empty span {
+  max-width: 480px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+@media (max-width: 780px) {
+  .notification-panel-header,
+  .notification-status-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .notification-panel-actions {
+    justify-content: stretch;
+  }
+
+  .notification-panel-actions > button {
+    flex: 1 1 180px;
+  }
+
+  .notification-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .notification-panel {
+    padding: 15px;
+    border-radius: 16px;
+  }
+
+  .notification-card {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .notification-card-top {
+    flex-wrap: wrap;
+  }
+
+  .notification-recipient-count {
+    max-width: 100%;
+    width: 100%;
+    margin-left: 0;
+    text-align: left;
+  }
+
+  .notification-fixture-line {
+    gap: 8px;
+  }
+
+  .notification-fixture-line strong {
+    font-size: 13px;
+  }
+
+  .notification-fact-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .notification-fact-grid > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .notification-fact-grid > div:nth-child(-n + 2) {
+    border-bottom: 1px solid #ece3d5;
+  }
+}

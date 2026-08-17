@@ -107,6 +107,58 @@ export type BackendPlayerRegistryEntry = {
   official_goals: number;
 };
 
+export type BackendNextFixtureNotification = {
+  teamId: number;
+  teamName: string;
+  teamShortCode: string;
+  teamAccent: string;
+  recipients: Array<{ email: string; displayName: string }>;
+  fixture: {
+    id: number;
+    matchday: number;
+    matchDate: string;
+    kickoffAt: number;
+    status: string;
+    isHome: boolean;
+    opponent: { id: number; name: string; shortCode: string; accent: string };
+  };
+  table: {
+    rank: number;
+    played: number;
+    points: number;
+    wins: number;
+    draws: number;
+    losses: number;
+    goalsFor: number;
+    goalsAgainst: number;
+    goalDifference: number;
+    cleanSheets: number;
+  };
+  opponentTable: {
+    rank: number;
+    played: number;
+    points: number;
+    wins: number;
+    draws: number;
+    losses: number;
+    goalsFor: number;
+    goalsAgainst: number;
+    goalDifference: number;
+    cleanSheets: number;
+  };
+};
+
+export type BackendNextFixtureNotificationsResponse = {
+  seasonId: number;
+  seasonName: string;
+  from: string;
+  providerConfigured: boolean;
+  notifications: BackendNextFixtureNotification[];
+  sent: number;
+  skipped: number;
+  failed: Array<{ email: string; reason: string }>;
+};
+
 export type BackendDashboard = {
   season: { id: number; name: string; status: string; matchday_count: number; current_matchday: number } | null;
   teams: Array<{ id: number; name: string; short_code: string; manager_name: string; accent: string; status: string; created_by_email: string | null }>;
@@ -126,6 +178,17 @@ export function backendDashboard() {
 
 export function backendGetPlayers() {
   return request<{ players: BackendPlayerRegistryEntry[] }>("/api/admin/players");
+}
+
+export function backendGetNextFixtureNotifications() {
+  return request<BackendNextFixtureNotificationsResponse>("/api/admin/notifications/next-fixtures");
+}
+
+export function backendSendNextFixtureNotifications() {
+  return request<BackendNextFixtureNotificationsResponse>("/api/admin/notifications/next-fixtures", {
+    method: "POST",
+    body: JSON.stringify({ send: true }),
+  });
 }
 
 export function backendRenamePlayer(teamId: number, oldName: string, newName: string, playerEmail?: string | null) {
