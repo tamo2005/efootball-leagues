@@ -218,12 +218,13 @@ export async function refreshLeagueNews(seasonId: number) {
       VALUES (:seasonId, :storyDate, :storyType, :storyKey, :headline, :description, :dataJson, :evidenceJson, :signature, :model, :now, :now)
       ON DUPLICATE KEY UPDATE headline = VALUES(headline), description = VALUES(description), data_json = VALUES(data_json), evidence_json = VALUES(evidence_json), evidence_signature = VALUES(evidence_signature), model = VALUES(model), generated_at = VALUES(generated_at), updated_at = VALUES(updated_at)`, { seasonId, storyDate: evidence.asOfDate, storyType: story.storyType, storyKey: `${seasonId}:${evidence.asOfDate}:${story.storyType}`, headline: story.headline, description: story.description, dataJson, evidenceJson, signature, model, now });
   }
-  return { generated: generated.length, stories: await getNewsRows() };
+  return { generated: generated.length, storyDate: evidence.asOfDate, stories: await getNewsRows(seasonId) };
 }
 
-export async function getNewsRows() {
+export async function getNewsRows(seasonId?: number) {
   await ensureNewsTables();
-  return query<NewsRow[]>("SELECT id, season_id, story_date, story_type, headline, description, data_json, evidence_json, model, generated_at FROM league_news ORDER BY generated_at DESC, id DESC LIMIT 50", {});
+  const seasonFilter = seasonId === undefined ? "" : "WHERE season_id = :seasonId";
+  return query<NewsRow[]>(`SELECT id, season_id, story_date, story_type, headline, description, data_json, evidence_json, model, generated_at FROM league_news ${seasonFilter} ORDER BY story_date DESC, generated_at DESC, id DESC LIMIT 50`, seasonId === undefined ? {} : { seasonId });
 }
 
 export async function getArchiveRows() {

@@ -12,6 +12,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
+    cache: "no-store",
     ...options,
   });
   const raw = await response.text();

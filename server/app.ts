@@ -749,8 +749,9 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
       ORDER BY goals DESC, g.scorer_name`,
   );
   const scorerReviews = user.role === "admin" ? (await backfillScorerReviewRecords(), await scorerReviewRows()) : [];
-  const news = await getNewsRows();
+  const news = await getNewsRows(season?.id === undefined ? undefined : Number(season.id));
   const seasonArchives = await getArchiveRows();
+  response.setHeader("Cache-Control", "no-store, max-age=0");
   response.json({
     season,
     teams,

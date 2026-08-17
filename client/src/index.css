@@ -1573,3 +1573,238 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
   .football-moments-panel { padding: 21px 17px; }
   .player-registry-art { width: 62px; height: 72px; }
 }
+
+/* Responsive dashboard polish: keep the match centre readable on phones. */
+@media (max-width: 760px) {
+  .league-sidebar {
+    position: fixed;
+    z-index: 30;
+    inset: 0 auto 0 0;
+    width: min(294px, 86vw);
+    height: 100dvh;
+    transform: translateX(-105%);
+    transition: transform 180ms ease-out;
+    box-shadow: 18px 0 45px rgba(13, 26, 33, .18);
+  }
+  .mobile-nav-open .league-sidebar {
+    transform: translateX(0);
+  }
+  .mobile-nav-open .league-sidebar .league-selector,
+  .mobile-nav-open .league-sidebar .league-nav,
+  .mobile-nav-open .league-sidebar .sidebar-footer {
+    display: flex;
+  }
+  .mobile-nav-open .league-sidebar .league-nav {
+    display: grid;
+  }
+  .mobile-nav-open .league-sidebar .sidebar-footer {
+    margin-top: auto;
+  }
+  .league-main {
+    width: 100%;
+  }
+  .league-topbar {
+    height: 62px;
+    padding: 0 16px;
+    gap: 12px;
+  }
+  .mobile-menu {
+    display: grid;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border-radius: 7px;
+    background: #17313a;
+  }
+  .breadcrumbs {
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .breadcrumbs > span,
+  .breadcrumbs > strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar-right {
+    flex: 0 0 auto;
+    gap: 5px;
+  }
+  .topbar-right .live-indicator,
+  .topbar-right .topbar-icon[aria-label="Search"],
+  .topbar-user > svg {
+    display: none;
+  }
+  .topbar-user {
+    margin-left: 0;
+  }
+  .league-content {
+    padding: 26px 16px 40px;
+  }
+  .page-intro {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 17px;
+    margin-bottom: 24px;
+  }
+  .page-intro > div:first-child {
+    min-width: 0;
+  }
+  .page-intro h1 {
+    max-width: 100%;
+    font-size: clamp(28px, 9vw, 38px);
+    overflow-wrap: anywhere;
+  }
+  .page-intro p:not(.eyebrow) {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .intro-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .intro-actions button {
+    flex: 1 1 145px;
+    min-width: 0;
+  }
+  .hero-grid,
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero-card,
+  .attention-card {
+    min-height: 0;
+  }
+  .hero-copy {
+    max-width: 100%;
+    padding: 28px 23px 112px;
+  }
+  .hero-card h2 {
+    max-width: 280px;
+    font-size: clamp(31px, 10vw, 43px);
+    overflow-wrap: anywhere;
+  }
+  .hero-actions {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .hero-art {
+    right: -28px;
+    width: 58%;
+    opacity: .72;
+  }
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+    margin-bottom: 24px;
+  }
+  .metric-card {
+    min-height: 116px;
+    padding: 16px 14px;
+  }
+  .metric-card strong {
+    margin-top: 14px;
+    font-size: 27px;
+  }
+  .panel,
+  .view-panel {
+    padding: 19px 16px;
+  }
+  .panel-header,
+  .view-toolbar {
+    flex-wrap: wrap;
+  }
+  .panel-header > div,
+  .view-toolbar > div {
+    min-width: 0;
+  }
+  .panel-header h2,
+  .view-toolbar h2,
+  .fixture-group-heading h2 {
+    overflow-wrap: anywhere;
+  }
+  .activity-item {
+    grid-template-columns: 29px minmax(0, 1fr);
+  }
+  .activity-item time {
+    grid-column: 2;
+    white-space: normal;
+  }
+  .newsroom-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .newsroom-actions button {
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+  .news-data-table {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .news-data-table table {
+    min-width: 470px;
+  }
+  .match-teams {
+    min-width: 0;
+  }
+  .match-team {
+    min-width: 0;
+  }
+  .match-team > span:first-child {
+    min-width: 0;
+    max-width: clamp(48px, 21vw, 124px);
+    overflow-wrap: anywhere;
+  }
+  .match-goals-summary,
+  .match-meta small,
+  .fixture-group-heading p {
+    overflow-wrap: anywhere;
+  }
+  .table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 430px) {
+  .league-topbar {
+    padding-inline: 12px;
+  }
+  .breadcrumbs > span {
+    max-width: 94px;
+  }
+  .topbar-right .role-badge {
+    display: none;
+  }
+  .league-content {
+    padding-inline: 12px;
+  }
+  .metric-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .intro-actions button {
+    flex-basis: 100%;
+  }
+  .panel,
+  .view-panel {
+    padding-inline: 13px;
+  }
+  .hero-copy {
+    padding-inline: 19px;
+  }
+  .hero-actions button,
+  .hero-text-action {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .league-sidebar {
+    transition: none;
+  }
+}
