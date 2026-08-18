@@ -175,6 +175,24 @@ export type BackendDashboard = {
 export function backendDashboard() {
   return request<BackendDashboard>("/api/dashboard");
 }
+export async function backendDownloadDatabaseExport() {
+  const response = await fetch("/api/admin/database/export", {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const raw = await response.text();
+    let message = raw || response.statusText || "The database export failed.";
+    try {
+      const payload = JSON.parse(raw) as { message?: string; error?: string };
+      message = payload.message || payload.error || message;
+    } catch { /* keep the raw response */ }
+    throw new Error(`${message} (HTTP ${response.status})`);
+  }
+  const contentDisposition = response.headers.get("content-disposition") || "";
+  const filename = contentDisposition.match(/filename=\"([^\"]+)\"/)?.[1] || `efootball-league-database-${new Date().toISOString().slice(0, 10)}.json`;
+  return { blob: await response.blob(), filename };
+}
 
 export function backendGetPlayers() {
   return request<{ players: BackendPlayerRegistryEntry[] }>("/api/admin/players");

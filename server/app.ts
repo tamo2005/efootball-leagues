@@ -1083,6 +1083,72 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
   });
 }));
 
+const EXPORT_REDACTED_COLUMNS: Record<string, Set<string>> = {
+  users: new Set(["password_hash"]),
+  sessions: new Set(["token_hash"]),
+};
+function quoteSqlIdentifier(value: string) {
+  return `\`${value.replace(/`/g, "``")}\``;
+}
+function exportSafeValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (Buffer.isBuffer(value)) return value.toString("base64");
+  if (Array.isArray(value)) return value.map(exportSafeValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, exportSafeValue(item)]));
+  }
+  return value;
+}
+async function buildDatabaseExport() {
+  const tableRows = await query<Array<{ TABLE_NAME: string }>>(
+    `SELECT TABLE_NAME
+       FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+      ORDER BY TABLE_NAME`,
+  );
+  const tables: Record<string, unknown[]> = {};
+  const redacted: Record<string, string[]> = {};
+  for (const tableRow of tableRows) {
+    const tableName = String(tableRow.TABLE_NAME);
+    const columns = await query<Array<{ COLUMN_NAME: string }>>(
+      `SELECT COLUMN_NAME
+         FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tableName
+        ORDER BY ORDINAL_POSITION`,
+      { tableName },
+    );
+    const hiddenColumns = EXPORT_REDACTED_COLUMNS[tableName] || new Set<string>();
+    const selectedColumns = columns.map((column) => String(column.COLUMN_NAME)).filter((column) => !hiddenColumns.has(column));
+    if (hiddenColumns.size) redacted[tableName] = Array.from(hiddenColumns);
+    if (!selectedColumns.length) {
+      tables[tableName] = [];
+      continue;
+    }
+    const rows = await query<Record<string, unknown>[]>(
+      `SELECT ${selectedColumns.map(quoteSqlIdentifier).join(", ")} FROM ${quoteSqlIdentifier(tableName)}`,
+    );
+    tables[tableName] = rows.map((row) => exportSafeValue(row));
+  }
+  return {
+    exportVersion: 1,
+    exportedAt: Date.now(),
+    exportedAtIst: new Intl.DateTimeFormat("en-IN", { timeZone: LEAGUE_TIME_ZONE, dateStyle: "full", timeStyle: "long" }).format(new Date()),
+    databaseName: new URL(process.env.DATABASE_URL || "mysql://localhost/unknown").pathname.slice(1),
+    tableCount: Object.keys(tables).length,
+    rowCounts: Object.fromEntries(Object.entries(tables).map(([table, rows]) => [table, rows.length])),
+    redacted,
+    tables,
+  };
+}
+app.get("/api/admin/database/export", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const snapshot = await buildDatabaseExport();
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.setHeader("Content-Disposition", `attachment; filename="efootball-league-database-${leagueDateKey()}.json"`);
+  response.json(snapshot);
+}));
 app.get("/api/teams", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
