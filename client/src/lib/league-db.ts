@@ -94,12 +94,16 @@ export type SeasonArchive = {
 export type ChronicleStatHighlight = {
   value: string;
   label: string;
+  metric?: string;
 };
 
 export type ChronicleLeadStory = {
   tag: string;
+  kicker?: string;
   headline: string;
   subdeck: string;
+  leadParagraph?: string;
+  bodyParagraphs?: string[];
   statHighlight?: ChronicleStatHighlight;
   body: string;
   accentColor?: string;
@@ -126,20 +130,56 @@ export type ChronicleBentoHighlight = {
 export type ChronicleCrisisWatch = {
   team: string;
   status: string;
+  badge?: string;
+  statSummary?: string;
   stats: {
     played: number;
     points: number;
     gd: number;
+    goalsAgainst?: number;
     goalsAgainstPerGame?: number;
+    cleanSheets?: number;
   };
   verdict: string;
 };
 
+export type ChronicleManagerPressure = {
+  manager: string;
+  team: string;
+  label: string;
+  score: number;
+  note: string;
+};
+
+export type ChronicleAward = {
+  kind: "TEAM_OF_WEEK" | "FLOP_OF_WEEK" | string;
+  label: string;
+  name: string;
+  team?: string;
+  detail: string;
+};
+
+export type ChronicleTouchlineDispatch = {
+  tag: string;
+  title: string;
+  blurb: string;
+};
+
+export type ChronicleQuote = {
+  quote: string;
+  attribution?: string;
+};
+
 export type ChronicleEditorial = {
   edition?: string;
+  dateline?: string;
   leadStory?: ChronicleLeadStory;
   bentoHighlights: ChronicleBentoHighlight[];
   crisisWatch?: ChronicleCrisisWatch;
+  managerPressure?: ChronicleManagerPressure[];
+  awards?: ChronicleAward[];
+  quoteOfMatchday?: ChronicleQuote;
+  touchlineDispatches?: ChronicleTouchlineDispatch[];
 };
 
 export type PunditEditorial = {

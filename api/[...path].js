@@ -313,20 +313,26 @@ function safeNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
+function stringList(value, maxItems = 8, itemLimit = 600) {
+  return Array.isArray(value) ? value.map((item) => clip(item, itemLimit)).filter(Boolean).slice(0, maxItems) : [];
+}
 function normalizeEditorial(value) {
   const raw = parseObject(value);
   if (!raw) return null;
   const lead = parseObject(raw.leadStory);
   const leadStat = lead ? parseObject(lead.statHighlight) : null;
+  const bodyParagraphs = lead ? stringList(lead.bodyParagraphs, 8, 900) : [];
+  const leadParagraph = lead?.leadParagraph ? clip(lead.leadParagraph, 1100) : void 0;
+  const body = clip(lead?.body || [leadParagraph, ...bodyParagraphs].filter(Boolean).join("\n\n"), 5e3);
   const bentoHighlights = (Array.isArray(raw.bentoHighlights) ? raw.bentoHighlights : []).slice(0, 6).map((item) => {
     const row = parseObject(item);
     if (!row) return null;
     const scoreline = parseObject(row.scoreline);
     return {
-      type: clip(row.type || "FACT", 40),
-      tag: clip(row.tag || "THE NUMBERS", 80),
-      title: clip(row.title || "League detail", 180),
-      detail: clip(row.detail || "", 600),
+      type: clip(row.type || row.badge || "FACT", 40),
+      tag: clip(row.tag || row.badge || "THE NUMBERS", 80),
+      title: clip(row.title || row.headline || "League detail", 180),
+      detail: clip(row.detail || row.summary || "", 600),
       quote: row.quote ? clip(row.quote, 360) : void 0,
       accentColor: clip(row.accentColor || "#8B1E3F", 16),
       scoreline: scoreline ? {
@@ -341,25 +347,65 @@ function normalizeEditorial(value) {
       } : void 0
     };
   }).filter(Boolean);
-  const crisis = parseObject(raw.crisisWatch);
+  const chalkboard = parseObject(raw.chalkboard);
+  const crisis = parseObject(raw.crisisWatch) || (chalkboard ? parseObject(chalkboard.crisisRadar) : null);
   const crisisStats = crisis ? parseObject(crisis.stats) : null;
+  const managerPressure = (Array.isArray(raw.managerPressure) ? raw.managerPressure : []).slice(0, 8).map((item) => {
+    const row = parseObject(item);
+    if (!row) return null;
+    return {
+      manager: clip(row.manager || "Manager", 120),
+      team: clip(row.team || "Team", 120),
+      label: clip(row.label || row.status || "UNDER REVIEW", 40),
+      score: Math.max(0, Math.min(100, safeNumber(row.score))),
+      note: clip(row.note || row.verdict || "Pressure is building.", 360)
+    };
+  }).filter(Boolean);
+  const awards = (Array.isArray(raw.awards) ? raw.awards : []).slice(0, 6).map((item) => {
+    const row = parseObject(item);
+    if (!row) return null;
+    return {
+      kind: clip(row.kind || "TEAM_OF_WEEK", 40),
+      label: clip(row.label || "WEEKLY FILE", 60),
+      name: clip(row.name || row.player || row.team || "League figure", 120),
+      team: row.team ? clip(row.team, 120) : void 0,
+      detail: clip(row.detail || row.note || "", 360)
+    };
+  }).filter(Boolean);
+  const quoteRaw = parseObject(raw.quoteOfMatchday);
+  const quoteOfMatchday = typeof raw.quoteOfMatchday === "string" ? { quote: clip(raw.quoteOfMatchday, 420) } : quoteRaw ? { quote: clip(quoteRaw.quote || quoteRaw.text || "", 420), attribution: quoteRaw.attribution ? clip(quoteRaw.attribution, 160) : void 0 } : void 0;
+  const touchlineDispatches = (Array.isArray(raw.touchlineDispatches) ? raw.touchlineDispatches : []).slice(0, 6).map((item) => {
+    const row = parseObject(item);
+    if (!row) return null;
+    return { tag: clip(row.tag || "TOUCHLINE DISPATCH", 80), title: clip(row.title || "Dispatch", 180), blurb: clip(row.blurb || row.description || "", 500) };
+  }).filter(Boolean);
   return {
     edition: raw.edition ? clip(raw.edition, 120) : void 0,
+    dateline: raw.dateline ? clip(raw.dateline, 140) : void 0,
     leadStory: lead ? {
       tag: clip(lead.tag || "LEAD STORY", 80),
+      kicker: lead.kicker ? clip(lead.kicker, 100) : void 0,
       headline: clip(lead.headline || "", 180),
       subdeck: clip(lead.subdeck || "", 280),
-      statHighlight: leadStat ? { value: clip(leadStat.value || "", 24), label: clip(leadStat.label || "", 80) } : void 0,
-      body: clip(lead.body || "", 4e3),
+      leadParagraph,
+      bodyParagraphs,
+      statHighlight: leadStat ? { value: clip(leadStat.value || leadStat.metric || "", 24), metric: leadStat.metric ? clip(leadStat.metric, 24) : void 0, label: clip(leadStat.label || "", 80) } : void 0,
+      body,
       accentColor: clip(lead.accentColor || "#8B1E3F", 16)
     } : void 0,
     bentoHighlights,
     crisisWatch: crisis ? {
       team: clip(crisis.team || "Red-zone team", 120),
-      status: clip(crisis.status || "WATCH", 40),
-      stats: { played: Math.max(0, safeNumber(crisisStats?.played)), points: Math.max(0, safeNumber(crisisStats?.points)), gd: safeNumber(crisisStats?.gd), goalsAgainstPerGame: crisisStats?.goalsAgainstPerGame === void 0 ? void 0 : Math.max(0, safeNumber(crisisStats.goalsAgainstPerGame)) },
+      status: clip(crisis.status || crisis.badge || "WATCH", 40),
+      badge: crisis.badge ? clip(crisis.badge, 40) : void 0,
+      statSummary: crisis.statSummary ? clip(crisis.statSummary, 180) : void 0,
+      stats: { played: Math.max(0, safeNumber(crisisStats?.played)), points: Math.max(0, safeNumber(crisisStats?.points)), gd: safeNumber(crisisStats?.gd), goalsAgainst: crisisStats?.goalsAgainst === void 0 ? void 0 : Math.max(0, safeNumber(crisisStats.goalsAgainst)), goalsAgainstPerGame: crisisStats?.goalsAgainstPerGame === void 0 ? void 0 : Math.max(0, safeNumber(crisisStats.goalsAgainstPerGame)), cleanSheets: crisisStats?.cleanSheets === void 0 ? void 0 : Math.max(0, safeNumber(crisisStats.cleanSheets)) },
       verdict: clip(crisis.verdict || "The next fixture carries pressure.", 360)
-    } : void 0
+    } : void 0,
+    managerPressure,
+    awards,
+    quoteOfMatchday: quoteOfMatchday?.quote ? quoteOfMatchday : void 0,
+    touchlineDispatches
   };
 }
 function modelConfig() {

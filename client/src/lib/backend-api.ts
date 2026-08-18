@@ -261,7 +261,7 @@ export function backendCreateSeason(name: string) {
 }
 
 import { matchDateKey } from "./league-db";
-import type { ChronicleBentoHighlight, ChronicleCrisisWatch, ChronicleEditorial, ChronicleLeadStory, Goal, LeagueDatabase, LeagueNewsStory, Match, PunditEditorial, SeasonArchive } from "./league-db";
+import type { ChronicleAward, ChronicleBentoHighlight, ChronicleCrisisWatch, ChronicleEditorial, ChronicleLeadStory, ChronicleManagerPressure, ChronicleQuote, ChronicleTouchlineDispatch, Goal, LeagueDatabase, LeagueNewsStory, Match, PunditEditorial, SeasonArchive } from "./league-db";
 
 function jsonObject(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
@@ -283,33 +283,44 @@ function jsonFacts(value: unknown): string[] {
 function jsonEditorial(value: unknown): ChronicleEditorial | undefined {
   const parsed = jsonObject(value);
   const raw = parsed && jsonObject(parsed.editorial) ? jsonObject(parsed.editorial) : parsed;
-  if (!raw || (!raw.leadStory && !Array.isArray(raw.bentoHighlights) && !raw.crisisWatch)) return undefined;
+  if (!raw || (!raw.leadStory && !Array.isArray(raw.bentoHighlights) && !raw.crisisWatch && !Array.isArray(raw.managerPressure) && !Array.isArray(raw.awards))) return undefined;
+  const asNumber = (input: unknown, fallback = 0) => Number.isFinite(Number(input)) ? Number(input) : fallback;
   const leadRaw = jsonObject(raw.leadStory);
+  const leadStatRaw = leadRaw ? jsonObject(leadRaw.statHighlight) : undefined;
   const leadStory: ChronicleLeadStory | undefined = leadRaw ? {
     tag: String(leadRaw.tag || "LEAD STORY").slice(0, 80),
+    kicker: leadRaw.kicker ? String(leadRaw.kicker).slice(0, 100) : undefined,
     headline: String(leadRaw.headline || "").slice(0, 180),
     subdeck: String(leadRaw.subdeck || "").slice(0, 280),
-    statHighlight: jsonObject(leadRaw.statHighlight) ? { value: String(jsonObject(leadRaw.statHighlight)?.value || "").slice(0, 24), label: String(jsonObject(leadRaw.statHighlight)?.label || "").slice(0, 80) } : undefined,
-    body: String(leadRaw.body || "").slice(0, 4000),
+    leadParagraph: leadRaw.leadParagraph ? String(leadRaw.leadParagraph).slice(0, 1100) : undefined,
+    bodyParagraphs: Array.isArray(leadRaw.bodyParagraphs) ? leadRaw.bodyParagraphs.map(String).map((item) => item.slice(0, 900)).filter(Boolean).slice(0, 8) : undefined,
+    statHighlight: leadStatRaw ? { value: String(leadStatRaw.value || leadStatRaw.metric || "").slice(0, 24), metric: leadStatRaw.metric ? String(leadStatRaw.metric).slice(0, 24) : undefined, label: String(leadStatRaw.label || "").slice(0, 80) } : undefined,
+    body: String(leadRaw.body || "").slice(0, 5000),
     accentColor: String(leadRaw.accentColor || "#8B1E3F").slice(0, 16),
   } : undefined;
   const bentoHighlights: ChronicleBentoHighlight[] = (Array.isArray(raw.bentoHighlights) ? raw.bentoHighlights : []).slice(0, 6).map((item) => {
     const row = jsonObject(item) || {};
     const scorelineRaw = jsonObject(row.scoreline);
     return {
-      type: String(row.type || "FACT").slice(0, 40),
-      tag: String(row.tag || "THE NUMBERS").slice(0, 80),
-      title: String(row.title || "League detail").slice(0, 180),
-      detail: String(row.detail || "").slice(0, 600),
+      type: String(row.type || row.badge || "FACT").slice(0, 40),
+      tag: String(row.tag || row.badge || "THE NUMBERS").slice(0, 80),
+      title: String(row.title || row.headline || "League detail").slice(0, 180),
+      detail: String(row.detail || row.summary || "").slice(0, 600),
       quote: row.quote ? String(row.quote).slice(0, 360) : undefined,
       accentColor: String(row.accentColor || "#8B1E3F").slice(0, 16),
-      scoreline: scorelineRaw ? { home: String(scorelineRaw.home || "Home").slice(0, 80), homeScore: Number(scorelineRaw.homeScore || 0), away: String(scorelineRaw.away || "Away").slice(0, 80), awayScore: Number(scorelineRaw.awayScore || 0), timeline: Array.isArray(scorelineRaw.timeline) ? scorelineRaw.timeline.slice(0, 8).map((event) => { const entry = jsonObject(event) || {}; return { player: String(entry.player || "Scorer").slice(0, 80), minute: String(entry.minute || "—").slice(0, 12) }; }) : undefined } : undefined,
+      scoreline: scorelineRaw ? { home: String(scorelineRaw.home || "Home").slice(0, 80), homeScore: asNumber(scorelineRaw.homeScore), away: String(scorelineRaw.away || "Away").slice(0, 80), awayScore: asNumber(scorelineRaw.awayScore), timeline: Array.isArray(scorelineRaw.timeline) ? scorelineRaw.timeline.slice(0, 8).map((event) => { const entry = jsonObject(event) || {}; return { player: String(entry.player || "Scorer").slice(0, 80), minute: String(entry.minute || "—").slice(0, 12) }; }) : undefined } : undefined,
     };
   });
-  const crisisRaw = jsonObject(raw.crisisWatch);
+  const chalkboardRaw = jsonObject(raw.chalkboard);
+  const crisisRaw = jsonObject(raw.crisisWatch) || (chalkboardRaw ? jsonObject(chalkboardRaw.crisisRadar) : undefined);
   const crisisStats = crisisRaw ? jsonObject(crisisRaw.stats) : undefined;
-  const crisisWatch: ChronicleCrisisWatch | undefined = crisisRaw ? { team: String(crisisRaw.team || "Red-zone team").slice(0, 120), status: String(crisisRaw.status || "WATCH").slice(0, 40), stats: { played: Number(crisisStats?.played || 0), points: Number(crisisStats?.points || 0), gd: Number(crisisStats?.gd || 0), goalsAgainstPerGame: crisisStats?.goalsAgainstPerGame === undefined ? undefined : Number(crisisStats.goalsAgainstPerGame) }, verdict: String(crisisRaw.verdict || "The next fixture carries pressure.").slice(0, 360) } : undefined;
-  return { edition: raw.edition ? String(raw.edition).slice(0, 120) : undefined, leadStory, bentoHighlights, crisisWatch };
+  const crisisWatch: ChronicleCrisisWatch | undefined = crisisRaw ? { team: String(crisisRaw.team || "Red-zone team").slice(0, 120), status: String(crisisRaw.status || crisisRaw.badge || "WATCH").slice(0, 40), badge: crisisRaw.badge ? String(crisisRaw.badge).slice(0, 40) : undefined, statSummary: crisisRaw.statSummary ? String(crisisRaw.statSummary).slice(0, 180) : undefined, stats: { played: asNumber(crisisStats?.played), points: asNumber(crisisStats?.points), gd: asNumber(crisisStats?.gd), goalsAgainst: crisisStats?.goalsAgainst === undefined ? undefined : asNumber(crisisStats.goalsAgainst), goalsAgainstPerGame: crisisStats?.goalsAgainstPerGame === undefined ? undefined : asNumber(crisisStats.goalsAgainstPerGame), cleanSheets: crisisStats?.cleanSheets === undefined ? undefined : asNumber(crisisStats.cleanSheets) }, verdict: String(crisisRaw.verdict || "The next fixture carries pressure.").slice(0, 360) } : undefined;
+  const managerPressure: ChronicleManagerPressure[] = (Array.isArray(raw.managerPressure) ? raw.managerPressure : []).slice(0, 8).map((item) => { const row = jsonObject(item) || {}; return { manager: String(row.manager || "Manager").slice(0, 120), team: String(row.team || "Team").slice(0, 120), label: String(row.label || row.status || "UNDER REVIEW").slice(0, 40), score: Math.max(0, Math.min(100, asNumber(row.score))), note: String(row.note || row.verdict || "Pressure is building.").slice(0, 360) }; });
+  const awards: ChronicleAward[] = (Array.isArray(raw.awards) ? raw.awards : []).slice(0, 6).map((item) => { const row = jsonObject(item) || {}; return { kind: String(row.kind || "TEAM_OF_WEEK").slice(0, 40), label: String(row.label || "WEEKLY FILE").slice(0, 60), name: String(row.name || row.player || row.team || "League figure").slice(0, 120), team: row.team ? String(row.team).slice(0, 120) : undefined, detail: String(row.detail || row.note || "").slice(0, 360) }; });
+  const quoteRaw = jsonObject(raw.quoteOfMatchday);
+  const quoteOfMatchday: ChronicleQuote | undefined = typeof raw.quoteOfMatchday === "string" ? { quote: String(raw.quoteOfMatchday).slice(0, 420) } : quoteRaw ? { quote: String(quoteRaw.quote || quoteRaw.text || "").slice(0, 420), attribution: quoteRaw.attribution ? String(quoteRaw.attribution).slice(0, 160) : undefined } : undefined;
+  const touchlineDispatches: ChronicleTouchlineDispatch[] = (Array.isArray(raw.touchlineDispatches) ? raw.touchlineDispatches : []).slice(0, 6).map((item) => { const row = jsonObject(item) || {}; return { tag: String(row.tag || "TOUCHLINE DISPATCH").slice(0, 80), title: String(row.title || "Dispatch").slice(0, 180), blurb: String(row.blurb || row.description || "").slice(0, 500) }; });
+  return { edition: raw.edition ? String(raw.edition).slice(0, 120) : undefined, dateline: raw.dateline ? String(raw.dateline).slice(0, 140) : undefined, leadStory, bentoHighlights, crisisWatch, managerPressure, awards, quoteOfMatchday: quoteOfMatchday?.quote ? quoteOfMatchday : undefined, touchlineDispatches };
 }
 
 function jsonArray(value: unknown): Array<Record<string, unknown>> {
