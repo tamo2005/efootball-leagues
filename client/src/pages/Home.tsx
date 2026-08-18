@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import {
   Activity,
   ArrowRight,
+  ArrowUp,
   Bell,
   CalendarDays,
   Check,
