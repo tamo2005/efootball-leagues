@@ -689,7 +689,8 @@ app.post("/api/admin/pundits", asyncRoute(async (request, response) => {
   const imageKeys = new Set(["goal-celebration", "goalkeeper-save", "player-registry-portrait", "football-heritage-captains", "league-hero"]);
   const imageKey = imageKeys.has(String(input.imageKey)) ? String(input.imageKey) : "goal-celebration";
   const facts = Array.isArray(input.facts) ? input.facts.map(String).map((fact) => fact.trim()).filter(Boolean).slice(0, 6) : [];
-  const pundit = await createPunditEditorial({ seasonId, publishDate, section: String(input.section || "THE PUNDIT DESK").trim().slice(0, 80) || "THE PUNDIT DESK", headline, dek, body, imageKey, facts, createdByEmail: user.email });
+  const editorial = input.editorial && typeof input.editorial === "object" && !Array.isArray(input.editorial) ? input.editorial : undefined;
+  const pundit = await createPunditEditorial({ seasonId, publishDate, section: String(input.section || "THE PUNDIT DESK").trim().slice(0, 80) || "THE PUNDIT DESK", headline, dek, body, imageKey, facts, editorial, createdByEmail: user.email });
   response.status(201).json({ pundit });
 }));
 app.delete("/api/admin/pundits/:id", asyncRoute(async (request, response) => {

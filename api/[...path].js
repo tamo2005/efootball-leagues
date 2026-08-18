@@ -309,6 +309,59 @@ function extractJson(value) {
   const end = trimmed.lastIndexOf("}");
   return start >= 0 && end > start ? parseObject(trimmed.slice(start, end + 1)) : null;
 }
+function safeNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+function normalizeEditorial(value) {
+  const raw = parseObject(value);
+  if (!raw) return null;
+  const lead = parseObject(raw.leadStory);
+  const leadStat = lead ? parseObject(lead.statHighlight) : null;
+  const bentoHighlights = (Array.isArray(raw.bentoHighlights) ? raw.bentoHighlights : []).slice(0, 6).map((item) => {
+    const row = parseObject(item);
+    if (!row) return null;
+    const scoreline = parseObject(row.scoreline);
+    return {
+      type: clip(row.type || "FACT", 40),
+      tag: clip(row.tag || "THE NUMBERS", 80),
+      title: clip(row.title || "League detail", 180),
+      detail: clip(row.detail || "", 600),
+      quote: row.quote ? clip(row.quote, 360) : void 0,
+      accentColor: clip(row.accentColor || "#8B1E3F", 16),
+      scoreline: scoreline ? {
+        home: clip(scoreline.home || "Home", 80),
+        homeScore: Math.max(0, Math.min(99, safeNumber(scoreline.homeScore))),
+        away: clip(scoreline.away || "Away", 80),
+        awayScore: Math.max(0, Math.min(99, safeNumber(scoreline.awayScore))),
+        timeline: Array.isArray(scoreline.timeline) ? scoreline.timeline.slice(0, 8).map((event) => {
+          const entry = parseObject(event);
+          return entry ? { player: clip(entry.player || "Scorer", 80), minute: clip(entry.minute || "\u2014", 12) } : null;
+        }).filter(Boolean) : void 0
+      } : void 0
+    };
+  }).filter(Boolean);
+  const crisis = parseObject(raw.crisisWatch);
+  const crisisStats = crisis ? parseObject(crisis.stats) : null;
+  return {
+    edition: raw.edition ? clip(raw.edition, 120) : void 0,
+    leadStory: lead ? {
+      tag: clip(lead.tag || "LEAD STORY", 80),
+      headline: clip(lead.headline || "", 180),
+      subdeck: clip(lead.subdeck || "", 280),
+      statHighlight: leadStat ? { value: clip(leadStat.value || "", 24), label: clip(leadStat.label || "", 80) } : void 0,
+      body: clip(lead.body || "", 4e3),
+      accentColor: clip(lead.accentColor || "#8B1E3F", 16)
+    } : void 0,
+    bentoHighlights,
+    crisisWatch: crisis ? {
+      team: clip(crisis.team || "Red-zone team", 120),
+      status: clip(crisis.status || "WATCH", 40),
+      stats: { played: Math.max(0, safeNumber(crisisStats?.played)), points: Math.max(0, safeNumber(crisisStats?.points)), gd: safeNumber(crisisStats?.gd), goalsAgainstPerGame: crisisStats?.goalsAgainstPerGame === void 0 ? void 0 : Math.max(0, safeNumber(crisisStats.goalsAgainstPerGame)) },
+      verdict: clip(crisis.verdict || "The next fixture carries pressure.", 360)
+    } : void 0
+  };
+}
 function modelConfig() {
   const token = process.env.HF_TOKEN?.trim();
   return token ? { token, model: process.env.HF_MODEL?.trim() || DEFAULT_HUGGING_FACE_MODEL } : null;
@@ -523,8 +576,11 @@ async function getPunditRows(seasonId) {
 async function createPunditEditorial(input) {
   await ensureNewsTables();
   const now = Date.now();
+  const editorial = normalizeEditorial(input.editorial);
+  const facts = Array.isArray(input.facts) ? input.facts.map((fact) => clip(fact, 360)).filter(Boolean).slice(0, 6) : [];
+  const factsPayload = editorial ? { facts, editorial } : facts;
   const result = await query(`INSERT INTO pundit_editorials (season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at)
-    VALUES (:seasonId, :publishDate, :section, :headline, :dek, :body, :imageKey, :factsJson, :createdByEmail, :now, :now)`, { seasonId: input.seasonId, publishDate: input.publishDate, section: input.section, headline: input.headline, dek: input.dek, body: input.body, imageKey: input.imageKey, factsJson: json(input.facts || []), createdByEmail: input.createdByEmail, now });
+    VALUES (:seasonId, :publishDate, :section, :headline, :dek, :body, :imageKey, :factsJson, :createdByEmail, :now, :now)`, { seasonId: input.seasonId, publishDate: input.publishDate, section: input.section, headline: input.headline, dek: input.dek, body: input.body, imageKey: input.imageKey, factsJson: json(factsPayload), createdByEmail: input.createdByEmail, now });
   const id = Number(result[0]?.insertId || 0);
   const rows = await query("SELECT id, season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at FROM pundit_editorials WHERE id = :id LIMIT 1", { id });
   return rows[0];
@@ -1182,7 +1238,8 @@ app.post("/api/admin/pundits", asyncRoute(async (request, response) => {
   const imageKeys = /* @__PURE__ */ new Set(["goal-celebration", "goalkeeper-save", "player-registry-portrait", "football-heritage-captains", "league-hero"]);
   const imageKey = imageKeys.has(String(input.imageKey)) ? String(input.imageKey) : "goal-celebration";
   const facts = Array.isArray(input.facts) ? input.facts.map(String).map((fact) => fact.trim()).filter(Boolean).slice(0, 6) : [];
-  const pundit = await createPunditEditorial({ seasonId, publishDate, section: String(input.section || "THE PUNDIT DESK").trim().slice(0, 80) || "THE PUNDIT DESK", headline, dek, body, imageKey, facts, createdByEmail: user.email });
+  const editorial = input.editorial && typeof input.editorial === "object" && !Array.isArray(input.editorial) ? input.editorial : void 0;
+  const pundit = await createPunditEditorial({ seasonId, publishDate, section: String(input.section || "THE PUNDIT DESK").trim().slice(0, 80) || "THE PUNDIT DESK", headline, dek, body, imageKey, facts, editorial, createdByEmail: user.email });
   response.status(201).json({ pundit });
 }));
 app.delete("/api/admin/pundits/:id", asyncRoute(async (request, response) => {

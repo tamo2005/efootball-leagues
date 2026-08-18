@@ -91,6 +91,57 @@ export type SeasonArchive = {
   highlights: Array<Record<string, unknown>>;
 };
 
+export type ChronicleStatHighlight = {
+  value: string;
+  label: string;
+};
+
+export type ChronicleLeadStory = {
+  tag: string;
+  headline: string;
+  subdeck: string;
+  statHighlight?: ChronicleStatHighlight;
+  body: string;
+  accentColor?: string;
+};
+
+export type ChronicleScoreline = {
+  home: string;
+  homeScore: number;
+  away: string;
+  awayScore: number;
+  timeline?: Array<{ player: string; minute: string }>;
+};
+
+export type ChronicleBentoHighlight = {
+  type: string;
+  tag: string;
+  title: string;
+  detail: string;
+  scoreline?: ChronicleScoreline;
+  quote?: string;
+  accentColor?: string;
+};
+
+export type ChronicleCrisisWatch = {
+  team: string;
+  status: string;
+  stats: {
+    played: number;
+    points: number;
+    gd: number;
+    goalsAgainstPerGame?: number;
+  };
+  verdict: string;
+};
+
+export type ChronicleEditorial = {
+  edition?: string;
+  leadStory?: ChronicleLeadStory;
+  bentoHighlights: ChronicleBentoHighlight[];
+  crisisWatch?: ChronicleCrisisWatch;
+};
+
 export type PunditEditorial = {
   id: string;
   seasonId?: string;
@@ -101,6 +152,7 @@ export type PunditEditorial = {
   body: string;
   imageKey: string;
   facts: string[];
+  editorial?: ChronicleEditorial;
   createdByEmail?: string;
   createdAt: string;
 };
