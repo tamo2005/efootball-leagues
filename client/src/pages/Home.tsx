@@ -847,6 +847,13 @@ export default function Home() {
   const pendingMatch = database.matches.find((match) => match.status === "PENDING");
   const ownedMatches = useMemo(() => user ? database.matches.filter((match) => isUserFixture(match, user)) : [], [database.matches, user?.teamId]);
   const scopedMatches = useMemo(() => fixtureScope === "mine" && user?.teamId ? ownedMatches : database.matches, [database.matches, fixtureScope, ownedMatches, user?.teamId]);
+  const liveMatchday = useMemo(() => {
+    const matchdays = database.matches.map((match) => ({ matchday: Number(match.matchday), date: match.date })).filter((match) => Number.isFinite(match.matchday) && match.matchday > 0);
+    if (!matchdays.length) return 0;
+    const today = leagueDateKey(new Date(clockNow));
+    const openMatchdays = matchdays.filter((match) => match.date && match.date <= today).map((match) => match.matchday);
+    return openMatchdays.length ? Math.max(...openMatchdays) : Math.min(...matchdays.map((match) => match.matchday));
+  }, [database.matches, clockNow]);
   const effectiveFixtureMatchday = selectedFixtureMatchday ?? liveMatchday;
   const filteredMatches = useMemo(() => scopedMatches.filter((match) => {
     const statusMatch = fixtureFilter === "all" || (fixtureFilter === "upcoming" && match.status === "SCHEDULED") || (fixtureFilter === "pending" && (match.status === "PENDING" || match.status === "DISPUTED")) || (fixtureFilter === "completed" && match.status === "CONFIRMED");
@@ -858,13 +865,6 @@ export default function Home() {
   }), [database.teams, effectiveFixtureMatchday, fixtureFilter, fixtureTeamFilter, scopedMatches, searchTerm]);
   const todayMatches = useMemo(() => database.matches.filter((match) => match.date === dateKey(new Date(clockNow))), [database.matches, clockNow]);
   const groupedFixtures = useMemo(() => Array.from(new Set(filteredMatches.map((match) => match.matchday))).map((matchday) => ({ matchday, matches: filteredMatches.filter((match) => match.matchday === matchday) })), [filteredMatches]);
-  const liveMatchday = useMemo(() => {
-    const matchdays = database.matches.map((match) => ({ matchday: Number(match.matchday), date: match.date })).filter((match) => Number.isFinite(match.matchday) && match.matchday > 0);
-    if (!matchdays.length) return 0;
-    const today = leagueDateKey(new Date(clockNow));
-    const openMatchdays = matchdays.filter((match) => match.date && match.date <= today).map((match) => match.matchday);
-    return openMatchdays.length ? Math.max(...openMatchdays) : Math.min(...matchdays.map((match) => match.matchday));
-  }, [database.matches, clockNow]);
   const userTeam = user?.teamId ? teamById(database.teams, user.teamId) : undefined;
   const selectedTeam = selectedTeamId ? database.teams.find((team) => team.id === selectedTeamId) : undefined;
   const selectedMatch = selectedMatchId ? database.matches.find((match) => match.id === selectedMatchId) : undefined;
