@@ -325,7 +325,7 @@ export function generateFixtures(teamIds: string[], matchesPerDay: number, start
 function applySeedResults(matches: Match[]): Match[] {
   const resultSeed: Array<{ index: number; homeScore: number; awayScore: number; status: MatchStatus; goals: Array<[string, string, number]> }> = [
     { index: 0, homeScore: 3, awayScore: 1, status: "CONFIRMED", goals: [["north-london", "Messi", 12], ["north-london", "Messi", 58], ["north-london", "Etoo", 76], ["river-city", "Ronaldo", 44]] },
-    { index: 1, homeScore: 2, awayScore: 2, status: "CONFIRMED", goals: [["blue-harbor", "Neymar", 21], ["blue-harbor", "Messi", 63], ["old-town", "Ronaldo", 38], ["old-town", "Mbappe", 79]] },
+    { index: 1, homeScore: 2, awayScore: 2, status: "CONFIRMED", goals: [["blue-harbor", "Neymar", 21], ["blue-harbor", "Vinicius Jr", 63], ["old-town", "Ronaldo", 38], ["old-town", "Mbappe", 79]] },
     { index: 2, homeScore: 1, awayScore: 0, status: "PENDING", goals: [["east-end", "Etoo", 67]] },
   ];
 
@@ -367,7 +367,7 @@ export function createSeedDatabase(): LeagueDatabase {
     tiebreakers: [...DEFAULT_TIEBREAKERS],
     activities: [
       { id: "activity-1", kind: "result", title: "Sam submitted a result", detail: "East End 1–0 Golden State · awaiting confirmation", time: "12 min ago" },
-      { id: "activity-2", kind: "leaderboard", title: "Messi moved into first", detail: "4 official goals · North London / Blue Harbor", time: "36 min ago" },
+      { id: "activity-2", kind: "leaderboard", title: "Messi moved into first", detail: "4 official goals · North London and Blue Harbor scorers", time: "36 min ago" },
       { id: "activity-3", kind: "update", title: "Fixtures generated", detail: "28 matches across 7 matchdays", time: "Yesterday" },
     ],
   };
