@@ -9,6 +9,7 @@ const DEFAULT_HUGGING_FACE_MODEL = "Qwen/Qwen3-4B-Instruct-2507";
 type NewsStoryType = "MATCHDAY_RECAP" | "UPCOMING_PREVIEW" | "STAT_FACT" | "SEASON_SUMMARY";
 type NewsRow = { id: number; season_id: number | null; story_date: string; story_type: NewsStoryType; headline: string; description: string; data_json: unknown; evidence_json: unknown; model: string | null; generated_at: number };
 type ArchiveRow = { id: number; season_id: number; season_name: string; completed_at: number; standings_json: unknown; player_stats_json: unknown; team_performance_json: unknown; highlights_json: unknown };
+export type PunditRow = { id: number; season_id: number | null; publish_date: string; section: string; headline: string; dek: string; body: string; image_key: string; facts_json: unknown; created_by_email: string | null; created_at: number; updated_at: number };
 
 type Evidence = {
   seasonId: number;
@@ -89,6 +90,23 @@ export async function ensureNewsTables() {
         UNIQUE KEY season_archives_season_uq (season_id),
         INDEX season_archives_completed_idx (completed_at),
         CONSTRAINT season_archives_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+      query(`CREATE TABLE IF NOT EXISTS pundit_editorials (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        season_id BIGINT UNSIGNED NULL,
+        publish_date VARCHAR(10) NOT NULL,
+        section VARCHAR(80) NOT NULL DEFAULT 'THE PUNDIT DESK',
+        headline VARCHAR(180) NOT NULL,
+        dek VARCHAR(280) NOT NULL,
+        body TEXT NOT NULL,
+        image_key VARCHAR(80) NOT NULL DEFAULT 'goal-celebration',
+        facts_json JSON NULL,
+        created_by_email VARCHAR(255) NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        INDEX pundit_editorials_date_idx (publish_date, updated_at),
+        INDEX pundit_editorials_season_idx (season_id),
+        CONSTRAINT pundit_editorials_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
     ]).then(() => undefined).catch((error) => { tablesReady = null; throw error; });
   }
@@ -230,6 +248,28 @@ export async function getNewsRows(seasonId?: number) {
 export async function getArchiveRows() {
   await ensureNewsTables();
   return query<ArchiveRow[]>("SELECT id, season_id, season_name, completed_at, standings_json, player_stats_json, team_performance_json, highlights_json FROM season_archives ORDER BY completed_at DESC LIMIT 20", {});
+}
+
+export async function getPunditRows(seasonId?: number) {
+  await ensureNewsTables();
+  const where = seasonId === undefined ? "" : "WHERE season_id = :seasonId OR season_id IS NULL";
+  return query<PunditRow[]>(`SELECT id, season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at FROM pundit_editorials ${where} ORDER BY publish_date DESC, updated_at DESC, id DESC LIMIT 50`, seasonId === undefined ? {} : { seasonId });
+}
+
+export async function createPunditEditorial(input: { seasonId: number | null; publishDate: string; section: string; headline: string; dek: string; body: string; imageKey: string; facts: unknown; createdByEmail: string | null }) {
+  await ensureNewsTables();
+  const now = Date.now();
+  const result = await query<{ insertId: number }>(`INSERT INTO pundit_editorials (season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at)
+    VALUES (:seasonId, :publishDate, :section, :headline, :dek, :body, :imageKey, :factsJson, :createdByEmail, :now, :now)`, { seasonId: input.seasonId, publishDate: input.publishDate, section: input.section, headline: input.headline, dek: input.dek, body: input.body, imageKey: input.imageKey, factsJson: json(input.facts || []), createdByEmail: input.createdByEmail, now });
+  const id = Number(result[0]?.insertId || 0);
+  const rows = await query<PunditRow[]>("SELECT id, season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at FROM pundit_editorials WHERE id = :id LIMIT 1", { id });
+  return rows[0];
+}
+
+export async function deletePunditEditorial(id: number) {
+  await ensureNewsTables();
+  await query("DELETE FROM pundit_editorials WHERE id = :id", { id });
+  return { deleted: true, id };
 }
 
 export async function archiveSeasonSnapshot(seasonId: number) {

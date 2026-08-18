@@ -96,6 +96,21 @@ export type BackendScorerReview = {
   away_team_name: string;
 };
 
+export type BackendPunditEditorial = {
+  id: number;
+  season_id: number | null;
+  publish_date: string;
+  section: string;
+  headline: string;
+  dek: string;
+  body: string;
+  image_key: string;
+  facts_json: unknown;
+  created_by_email: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
 export type BackendPlayerRegistryEntry = {
   team_id: number;
   team_name: string;
@@ -169,6 +184,7 @@ export type BackendDashboard = {
   stats: Array<{ player_email: string | null; scorer_name: string; team_id: number; team_name: string; goals: number }>;
   scorerReviews: BackendScorerReview[];
   news: Array<{ id: number; season_id: number | null; story_date: string; story_type: string; headline: string; description: string; data_json: unknown; evidence_json: unknown; model: string | null; generated_at: number }>;
+  pundits: BackendPunditEditorial[];
   seasonArchives: Array<{ id: number; season_id: number; season_name: string; completed_at: number; standings_json: unknown; player_stats_json: unknown; team_performance_json: unknown; highlights_json: unknown }>;
 };
 
@@ -196,6 +212,22 @@ export async function backendDownloadDatabaseExport() {
 
 export function backendGetPlayers() {
   return request<{ players: BackendPlayerRegistryEntry[] }>("/api/admin/players");
+}
+
+export function backendGetPundits(seasonId?: number) {
+  const suffix = seasonId === undefined ? "" : `?seasonId=${encodeURIComponent(String(seasonId))}`;
+  return request<{ pundits: BackendPunditEditorial[] }>(`/api/pundit-editorials${suffix}`);
+}
+
+export function backendCreatePundit(input: { seasonId: number | null; publishDate: string; section: string; headline: string; dek: string; body: string; imageKey: string; facts: string[] }) {
+  return request<{ pundit: BackendPunditEditorial }>("/api/admin/pundits", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function backendDeletePundit(id: number) {
+  return request<{ deleted: boolean; id: number }>(`/api/admin/pundits/${id}`, { method: "DELETE" });
 }
 
 export function backendGetNextFixtureNotifications() {
@@ -229,7 +261,7 @@ export function backendCreateSeason(name: string) {
 }
 
 import { matchDateKey } from "./league-db";
-import type { Goal, LeagueDatabase, LeagueNewsStory, Match, SeasonArchive } from "./league-db";
+import type { Goal, LeagueDatabase, LeagueNewsStory, Match, PunditEditorial, SeasonArchive } from "./league-db";
 
 function jsonObject(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
@@ -240,6 +272,11 @@ function jsonObject(value: unknown): Record<string, unknown> | undefined {
     } catch { return undefined; }
   }
   return undefined;
+}
+
+function jsonFacts(value: unknown): string[] {
+  const parsed = Array.isArray(value) ? value : typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return []; } })() : [];
+  return Array.isArray(parsed) ? parsed.map((fact) => typeof fact === "string" ? fact.trim() : fact && typeof fact === "object" ? String((fact as { value?: unknown }).value || (fact as { label?: unknown }).label || "").trim() : "").filter(Boolean).slice(0, 6) : [];
 }
 
 function jsonArray(value: unknown): Array<Record<string, unknown>> {
@@ -303,6 +340,19 @@ export function mergeBackendDashboard(current: LeagueDatabase, snapshot: Backend
     users,
     matches,
     activities: [],
+    punditEditorials: snapshot.pundits.map((story): PunditEditorial => ({
+      id: String(story.id),
+      seasonId: story.season_id === null ? undefined : String(story.season_id),
+      publishDate: story.publish_date,
+      section: story.section,
+      headline: story.headline,
+      dek: story.dek,
+      body: story.body,
+      imageKey: story.image_key,
+      facts: jsonFacts(story.facts_json),
+      createdByEmail: story.created_by_email || undefined,
+      createdAt: new Date(Number(story.created_at)).toISOString(),
+    })),
     news: snapshot.news.map((story): LeagueNewsStory => ({
       id: String(story.id),
       seasonId: story.season_id === null ? undefined : String(story.season_id),

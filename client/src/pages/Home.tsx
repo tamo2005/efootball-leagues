@@ -65,6 +65,7 @@ import {
   type Goal,
   type LeagueDatabase,
   type LeagueNewsStory,
+  type PunditEditorial,
   type Match,
   type SeasonArchive,
   type PlayerStat,
@@ -74,7 +75,7 @@ import {
   type TiebreakerRule,
   type UserAccount,
 } from "@/lib/league-db";
-import { backendAnalyzeScorerReviews, backendApproveScorerReview, backendApproveTeam, backendCompleteSeason, backendConfirmResult, backendCreateSeason, backendCreateTeam, backendDashboard, backendDeleteTeam, backendDownloadDatabaseExport, backendEnabled, backendGetNextFixtureNotifications, backendGetPlayers, backendLogin, backendLogout, backendMe, backendRefreshNews, backendRegister, backendRejectScorerReview, backendRenamePlayer, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendSendNextFixtureNotifications, backendStartTournament, backendSubmitResult, backendUpdateTeam, backendUpdateUser, mergeBackendDashboard, toLocalUser, type BackendNextFixtureNotification, type BackendNextFixtureNotificationsResponse, type BackendPlayerRegistryEntry, type BackendScorerReview } from "@/lib/backend-api";
+import { backendAnalyzeScorerReviews, backendApproveScorerReview, backendApproveTeam, backendCompleteSeason, backendConfirmResult, backendCreatePundit, backendCreateSeason, backendCreateTeam, backendDashboard, backendDeletePundit, backendDeleteTeam, backendDownloadDatabaseExport, backendEnabled, backendGetNextFixtureNotifications, backendGetPlayers, backendLogin, backendLogout, backendMe, backendRefreshNews, backendRegister, backendRejectScorerReview, backendRenamePlayer, backendRescheduleMatch, backendResetTournament, backendScorerSuggestions, backendSendNextFixtureNotifications, backendStartTournament, backendSubmitResult, backendUpdateTeam, backendUpdateUser, mergeBackendDashboard, toLocalUser, type BackendNextFixtureNotification, type BackendNextFixtureNotificationsResponse, type BackendPlayerRegistryEntry, type BackendScorerReview } from "@/lib/backend-api";
 
 type View = "overview" | "fixtures" | "teams" | "table" | "database" | "rules";
 type ResultInput = { id: string; teamId: string; playerName: string; playerEmail?: string; minute: string };
@@ -205,6 +206,54 @@ function newsTable(story: LeagueNewsStory) {
 function NewsroomPanel({ news, archives, isAdmin, seasonStatus, seasonReady, onRefresh, onArchive, onCreateSeason, busy }: { news: LeagueNewsStory[]; archives: SeasonArchive[]; isAdmin: boolean; seasonStatus: string; seasonReady: boolean; onRefresh: () => void; onArchive: () => void; onCreateSeason: () => void; busy: boolean }) {
   const stories = news.slice(0, 8);
   return <section className="panel newsroom-panel"><div className="panel-header"><div><p className="eyebrow">eLEAGUE NEWSROOM</p><h2>Stories from the touchline</h2><p className="section-caption">AI-written reports use confirmed results, verified tables, and scheduled fixtures only. No unsupported events are added.</p></div><Newspaper size={18} className="panel-icon" /></div>{isAdmin && <div className="newsroom-actions"><Button onClick={onRefresh} disabled={busy}><RefreshCw size={14} /> {busy ? "Updating…" : "Refresh newsroom"}</Button><Button variant="outline" onClick={onArchive} disabled={busy || !seasonStatus || !seasonReady} title={!seasonReady ? "Confirm every fixture before archiving the season" : "Preserve this season and publish its summary"}><Archive size={14} /> {seasonReady ? "Archive season" : "Archive after final result"}</Button>{seasonStatus === "COMPLETED" && <Button variant="outline" onClick={onCreateSeason} disabled={busy}><Plus size={14} /> Create next season</Button>}</div>}<div className="news-story-list">{!stories.length && <div className="news-empty"><Newspaper size={22} /><strong>The newsroom is waiting for its first confirmed story.</strong><span>Daily matchday reports will appear here once the schedule and results provide evidence.</span></div>}{stories.map((story) => { const table = newsTable(story); return <article className="news-story-card" key={story.id}><div className="news-story-meta"><span className={`news-story-type news-${story.storyType.toLowerCase()}`}>{story.storyType.replaceAll("_", " ")}</span><time>{story.storyDate}</time></div><h3>{story.headline}</h3><p>{story.description}</p>{table && <div className="news-data-table"><table><thead><tr>{table.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{table.rows.slice(0, 6).map((row, index) => <tr key={`${story.id}-${index}`}>{table.columns.map((_, columnIndex) => <td key={`${story.id}-${index}-${columnIndex}`}>{String(row[columnIndex] ?? "—")}</td>)}</tr>)}</tbody></table></div>}<small className="news-story-source">Evidence date: {story.storyDate} · {story.model === "evidence-only-fallback" ? "Verified data fallback" : "Hugging Face editorial draft"}</small></article>; })}</div>{archives.length > 0 && <div className="season-archive-block"><div className="section-subheading"><div><p className="eyebrow">SEASON ARCHIVE</p><h3>Previous campaigns, preserved</h3></div><Archive size={17} /></div><div className="season-archive-list">{archives.slice(0, 5).map((archive) => <article className="season-archive-card" key={archive.id}><div><strong>{archive.seasonName}</strong><small>Completed {archive.completedAt.slice(0, 10)}</small></div><div className="archive-stat"><b>{archive.standings[0]?.name ? String(archive.standings[0].name) : "—"}</b><small>champion / table leader</small></div><div className="archive-stat"><b>{archive.playerStats[0]?.name ? String(archive.playerStats[0].name) : "—"}</b><small>top scorer</small></div></article>)}</div></div>}</section>;
+}
+
+const CHRONICLE_IMAGE_PRESETS: Record<string, string> = {
+  "goal-celebration": "goal-celebration.jpg",
+  "goalkeeper-save": "goalkeeper-save.jpg",
+  "football-heritage-captains": "football-heritage-captains.jpg",
+  "league-hero": "league-hero.jpg",
+  "player-registry-portrait": "player-registry-portrait.jpg",
+};
+
+const CHRONICLE_TEMPLATE_BODY = "Del Piero is a One-Man Army: Alessandro Del Piero has buried 10 goals in just 4 matchdays for Soham FC. Manager Soham_2003 is completely relying on him to maintain their spot at the top of the table with 10 points.\n\nMbappé's Five-Star Carnage: Real Tamo did not just beat Barcelona on Matchday 3; they obliterated them 8-0. Kylian Mbappé was responsible for five of those goals (3', 32', 47', 55', 90').\n\nManagers on the Pitch: DXBJIT_ secured a 3-0 victory against Barcelona on Matchday 4. In a bizarre twist, Pep Guardiola scored their opening goal in the 26th minute under manager Debjit Deb Barman.\n\nBarcelona's Complete Implosion: Manager Subhankar Chakrabarti started strong with a 3-0 win, but Barcelona has since suffered three straight defeats. They have conceded 11 goals in their last two matches without scoring a single reply.\n\nChutpaglu is Free-Falling: Manager Bankai is having a nightmare; Chutpaglu has lost all four matches, yielding 17 goals and scoring only 3.\n\nThe Unbreakable Blue Horse: Manager Neelkantha Saha has turned Blue Horse of India into a tactical wall. After an opening win, they have ground out three consecutive draws to remain unbeaten.\n\nThe Zlatan Paradox: Zlatan Ibrahimović is somehow terrorizing the league for multiple teams simultaneously. He scored a hat-trick for Binod 11 against Chutpaglu and also netted a first-minute goal for PrALaY FC against Blue Horse of India.\n\nBinod 11's Whiplash Form: Binod 11 battered Chutpaglu 8-1 on Matchday 3, only to be dismantled 4-0 by Soham FC in their very next match.\n\nThe Dutch Renaissance: Blue Horse of India is being carried by classic Dutch firepower. Marco van Basten scored a brace in Matchday 4, and Ruud Gullit has also found the net to keep their undefeated streak alive.\n\nThe Invincibles: As we head into Matchday 5, four teams have yet to taste defeat: Soham FC, DXBJIT_, Real Tamo, and Blue Horse of India.\n\nPredictions & News: Matchday 6 features Real Tamo against Soham FC. Barcelona must lock down its defence, while Chutpaglu needs a defensive overhaul after a -14 goal difference.";
+
+function chronicleImage(imageKey: string) {
+  return `/assets/football/${CHRONICLE_IMAGE_PRESETS[imageKey] || CHRONICLE_IMAGE_PRESETS["goal-celebration"]}`;
+}
+
+function KhalparChroniclePanel({ editorials, standings, isAdmin, seasonId, busy, onPublish, onDelete }: { editorials: PunditEditorial[]; standings: Standing[]; isAdmin: boolean; seasonId: number | null; busy: boolean; onPublish: (input: { seasonId: number | null; publishDate: string; section: string; headline: string; dek: string; body: string; imageKey: string; facts: string[] }) => void; onDelete: (id: string) => void }) {
+  const hero = editorials[0];
+  const [headline, setHeadline] = useState("Top 10 Facts from League'de Khalpar");
+  const [dek, setDek] = useState("The first dispatch from the pundit desk: verified league colour, sharp turns of form, and the players shaping the table.");
+  const [body, setBody] = useState(CHRONICLE_TEMPLATE_BODY);
+  const [imageKey, setImageKey] = useState("goal-celebration");
+  const [publishDate, setPublishDate] = useState(dateKey());
+  const [factsText, setFactsText] = useState("Del Piero's 10 goals in four matchdays for Soham FC.\nMbappé scored five in Real Tamo's 8-0 win over Barcelona.\nFour teams entered Matchday 5 unbeaten.");
+  const redZone = [...standings].sort((a, b) => a.points - b.points || a.goalDifference - b.goalDifference)[0];
+  const factCards = editorials.flatMap((item) => item.facts.map((fact, index) => ({ fact, section: item.section, index }))).slice(0, 6);
+  const heroFacts = hero?.facts?.length ? hero.facts : ["The desk is ready for its first signed dispatch.", "Every story is entered by the league administrator.", "Preset imagery keeps each issue visually consistent."];
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const facts = factsText.split("\n").map((fact) => fact.trim()).filter(Boolean).slice(0, 6);
+    if (!headline.trim() || !dek.trim() || body.trim().length < 40) {
+      toast.error("Complete the Chronicle headline, standfirst, and copy.");
+      return;
+    }
+    onPublish({ seasonId, publishDate, section: "THE PUNDIT DESK", headline: headline.trim(), dek: dek.trim(), body: body.trim(), imageKey, facts });
+  }
+  return <section className="panel chronicle-panel">
+    <div className="chronicle-masthead"><div><p className="chronicle-kicker">THE PULSE OF LEAGUE'DE KHALPAR</p><h2>THE KHALPAR CHRONICLE</h2></div><div className="chronicle-date"><strong>{new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "long", year: "numeric" }).format(new Date(`${(hero?.publishDate || dateKey())}T12:00:00`))}</strong><span>Matchday {standings.reduce((max, team) => Math.max(max, team.played), 0) + 1} · {hero?.section || "Pundit desk"}</span></div></div>
+    <div className="chronicle-rule" />
+    {!hero ? <div className="chronicle-empty"><Newspaper size={22} /><div><strong>The Chronicle is waiting for its inaugural issue.</strong><p>Use the admin desk below to publish a signed editorial. The league data room remains separate and evidence-backed.</p></div></div> : <>
+      <div className="chronicle-lead-grid"><article className="chronicle-hero-story"><div className="chronicle-image-wrap"><img src={chronicleImage(hero.imageKey)} alt="Editorial football moment" /><span>{hero.section}</span></div><div className="chronicle-hero-copy"><p className="chronicle-overline">{hero.publishDate} · SPECIAL REPORT</p><h3>{hero.headline}</h3><p className="chronicle-dek">{hero.dek}</p><p className="chronicle-body">{hero.body}</p><small>Filed by {hero.createdByEmail || "The Khalpar Chronicle desk"}</small>{isAdmin && <button className="chronicle-delete" onClick={() => onDelete(hero.id)} disabled={busy}><Trash2 size={13} /> Delete issue</button>}</div></article>
+        <aside className="chronicle-chalkboard"><div className="chalkboard-heading"><span>THE CHALKBOARD</span><small>FORM & PRESSURE</small></div><h4>Top four invincibles</h4><div className="chalkboard-table">{standings.slice(0, 4).map((team, index) => <div key={team.id}><b>{String(index + 1).padStart(2, "0")}</b><span>{team.name}</span><strong>{team.points} pts</strong><small>{team.played} played · {team.goalDifference > 0 ? "+" : ""}{team.goalDifference} GD</small></div>)}</div><div className="red-zone-box"><span>RED-ZONE WATCH</span>{redZone ? <><strong>{redZone.name}</strong><p>{redZone.points} points from {redZone.played} played, with a {redZone.goalDifference > 0 ? "+" : ""}{redZone.goalDifference} goal difference. The next clean sheet matters.</p></> : <p>Live standings will appear once results are confirmed.</p>}</div></aside>
+      </div>
+      <div className="chronicle-facts"><div className="chronicle-section-heading"><div><p className="chronicle-overline">02 / SPICY FACTS</p><h4>What the numbers are saying</h4></div><span>Verified desk copy</span></div><div className="chronicle-facts-grid">{(factCards.length ? factCards : heroFacts.map((fact, index) => ({ fact, section: "THE PUNDIT DESK", index }))).slice(0, 6).map((item, index) => <article key={`${item.section}-${index}`}><span>0{index + 1}</span><p>{item.fact}</p><small>{item.section}</small></article>)}</div></div>
+    </>}
+    {isAdmin && <details className="chronicle-publish" open={!hero}><summary><span><Pencil size={15} /> Publish to the Chronicle</span><small>Preset format · admin only</small></summary><form onSubmit={submit}><div className="chronicle-form-grid"><label>Headline<input value={headline} onChange={(event) => setHeadline(event.target.value)} maxLength={180} /></label><label>Standfirst / dek<input value={dek} onChange={(event) => setDek(event.target.value)} maxLength={280} /></label><label>Publish date<input type="date" value={publishDate} onChange={(event) => setPublishDate(event.target.value)} /></label><label>Preset image<select value={imageKey} onChange={(event) => setImageKey(event.target.value)}>{Object.keys(CHRONICLE_IMAGE_PRESETS).map((key) => <option value={key} key={key}>{key.replaceAll("-", " ")}</option>)}</select></label></div><label>Editorial copy<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={10} /></label><label>Spicy facts <span className="form-help">One fact per line; use only copy you can support.</span><textarea value={factsText} onChange={(event) => setFactsText(event.target.value)} rows={4} /></label><div className="chronicle-form-actions"><small>Publishes to season {seasonId || "the current league"}; no automatic AI copy is generated.</small><Button type="submit" disabled={busy}><Newspaper size={15} /> {busy ? "Publishing…" : "Publish issue"}</Button></div></form></details>}
+    {editorials.length > 1 && <div className="chronicle-back-catalog"><div className="chronicle-section-heading"><div><p className="chronicle-overline">03 / BACK CATALOG</p><h4>Previous dispatches</h4></div></div>{editorials.slice(1).map((item) => <article key={item.id}><div><span>{item.publishDate}</span><strong>{item.headline}</strong><p>{item.dek}</p></div>{isAdmin && <button className="chronicle-delete" onClick={() => onDelete(item.id)} disabled={busy}><Trash2 size={13} /> Delete</button>}</article>)}</div>}
+  </section>;
 }
 
 function LoginPanel({ database, onLogin, useBackend }: { database: LeagueDatabase; onLogin: (user: UserAccount) => void; useBackend: boolean }) {
@@ -684,6 +733,34 @@ export default function Home() {
     } finally { setNewsBusy(false); }
   }
 
+  async function publishPundit(input: { seasonId: number | null; publishDate: string; section: string; headline: string; dek: string; body: string; imageKey: string; facts: string[] }) {
+    if (!isAdmin || !useBackend) {
+      toast("Chronicle publishing requires the live admin database.", { description: "Sign in as the league admin with the backend enabled." });
+      return;
+    }
+    setNewsBusy(true);
+    try {
+      await backendCreatePundit(input);
+      await refreshRemoteDashboard();
+      toast.success("Issue published", { description: "The new editorial is now live in The Khalpar Chronicle." });
+    } catch (error) {
+      toast.error("Issue could not be published", { description: error instanceof Error ? error.message : "Try again shortly." });
+    } finally { setNewsBusy(false); }
+  }
+
+  async function deletePundit(id: string) {
+    if (!isAdmin || !useBackend) return;
+    if (!window.confirm("Delete this Chronicle issue? This cannot be undone.")) return;
+    setNewsBusy(true);
+    try {
+      await backendDeletePundit(Number(id));
+      await refreshRemoteDashboard();
+      toast.success("Issue deleted", { description: "The editorial was removed from the Chronicle." });
+    } catch (error) {
+      toast.error("Issue could not be deleted", { description: error instanceof Error ? error.message : "Try again shortly." });
+    } finally { setNewsBusy(false); }
+  }
+
   async function archiveSeason() {
     if (!isAdmin || !useBackend) return;
     setNewsBusy(true);
@@ -1015,6 +1092,7 @@ export default function Home() {
             <div className="dashboard-grid"><section className="panel standings-panel"><div className="panel-header"><div><p className="eyebrow">01 / OFFICIAL TABLE</p><h2>Standings</h2></div><button className="panel-link" onClick={() => setActiveView("table")}>Full table <ArrowRight size={14} /></button></div><StandingTable standings={standings} compact /></section><section className="panel activity-panel"><div className="panel-header"><div><p className="eyebrow">02 / LIVE FEED</p><h2>Recent activity</h2></div><Activity size={18} className="panel-icon" /></div><ActivityFeed activities={database.activities} news={database.news || []} /></section></div>
             <TeamPerformancePanel performance={teamPerformance} />
             <FootballMomentsPanel />
+            <KhalparChroniclePanel editorials={database.punditEditorials || []} standings={standings} isAdmin={Boolean(isAdmin)} seasonId={Number.isFinite(Number(database.league.id)) ? Number(database.league.id) : null} busy={newsBusy} onPublish={publishPundit} onDelete={deletePundit} />
             <NewsroomPanel news={database.news || []} archives={database.seasonArchives || []} isAdmin={Boolean(isAdmin)} seasonStatus={database.league.status} seasonReady={seasonReadyToArchive} onRefresh={refreshNewsroom} onArchive={archiveSeason} onCreateSeason={createNextSeason} busy={newsBusy} />
             <section className="panel next-fixtures-panel"><div className="panel-header"><div><p className="eyebrow">03 / NEXT UP</p><h2>Fixture desk</h2></div><button className="panel-link" onClick={() => setActiveView("fixtures")}>See all {database.matches.length} fixtures <ArrowRight size={14} /></button></div><div className="next-fixtures-list">{database.matches.filter((match) => match.status !== "CONFIRMED").slice(0, 3).map((match) => <MatchRow key={match.id} database={database} match={match} user={user} isAdmin={isAdmin} onResult={openResult} onConfirm={confirmMatch} onReschedule={rescheduleMatch} />)}</div></section>
           </>}

@@ -91,6 +91,20 @@ export type SeasonArchive = {
   highlights: Array<Record<string, unknown>>;
 };
 
+export type PunditEditorial = {
+  id: string;
+  seasonId?: string;
+  publishDate: string;
+  section: string;
+  headline: string;
+  dek: string;
+  body: string;
+  imageKey: string;
+  facts: string[];
+  createdByEmail?: string;
+  createdAt: string;
+};
+
 export type LeagueDatabase = {
   league: League;
   teams: Team[];
@@ -98,6 +112,7 @@ export type LeagueDatabase = {
   matches: Match[];
   activities: Activity[];
   news?: LeagueNewsStory[];
+  punditEditorials?: PunditEditorial[];
   seasonArchives?: SeasonArchive[];
   currentUserId: string | null;
   tiebreakers: TiebreakerRule[];

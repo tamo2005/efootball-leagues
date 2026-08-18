@@ -5,7 +5,7 @@ import { OAuth2Client } from "google-auth-library";
 import { clearSession, createSession, findUserByEmail, getCurrentUser, hashPassword, verifyPassword, type CurrentUser } from "./auth";
 import { databaseHealth, isDatabaseConfigured, query, withTransaction } from "./db";
 import { assertScheduleIsCompatible, calculateStandings, generateRoundRobin } from "./league-service";
-import { archiveSeasonSnapshot, ensureNewsTables, getArchiveRows, getNewsRows, refreshLeagueNews } from "./news-service";
+import { archiveSeasonSnapshot, createPunditEditorial, deletePunditEditorial, ensureNewsTables, getArchiveRows, getNewsRows, getPunditRows, refreshLeagueNews } from "./news-service";
 
 const app = express();
 app.set("trust proxy", true);
@@ -654,6 +654,54 @@ app.post("/api/news/refresh", asyncRoute(async (request, response) => {
   response.json(result);
 }));
 
+app.get("/api/pundit-editorials", asyncRoute(async (request, response) => {
+  const requestedSeason = request.query.seasonId === undefined ? undefined : Number(request.query.seasonId);
+  response.json({ pundits: await getPunditRows(Number.isInteger(requestedSeason) ? requestedSeason : undefined) });
+}));
+app.get("/api/admin/pundits", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const requestedSeason = request.query.seasonId === undefined ? undefined : Number(request.query.seasonId);
+  response.json({ pundits: await getPunditRows(Number.isInteger(requestedSeason) ? requestedSeason : undefined) });
+}));
+app.post("/api/admin/pundits", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const input = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
+  const headline = String(input.headline || "").trim();
+  const dek = String(input.dek || "").trim();
+  const body = String(input.body || "").trim();
+  if (headline.length < 8 || headline.length > 180) {
+    response.status(400).json({ error: "INVALID_HEADLINE", message: "Headline must be between 8 and 180 characters." });
+    return;
+  }
+  if (dek.length < 12 || dek.length > 280) {
+    response.status(400).json({ error: "INVALID_DEK", message: "Standfirst must be between 12 and 280 characters." });
+    return;
+  }
+  if (body.length < 40 || body.length > 20000) {
+    response.status(400).json({ error: "INVALID_BODY", message: "Pundit copy must be between 40 and 20,000 characters." });
+    return;
+  }
+  const requestedSeasonId = Number(input.seasonId);
+  const seasonId = Number.isInteger(requestedSeasonId) && requestedSeasonId > 0 ? requestedSeasonId : null;
+  const publishDate = /^\\d{4}-\\d{2}-\\d{2}$/.test(String(input.publishDate || "")) ? String(input.publishDate) : leagueDateKey();
+  const imageKeys = new Set(["goal-celebration", "goalkeeper-save", "player-registry-portrait", "football-heritage-captains", "league-hero"]);
+  const imageKey = imageKeys.has(String(input.imageKey)) ? String(input.imageKey) : "goal-celebration";
+  const facts = Array.isArray(input.facts) ? input.facts.map(String).map((fact) => fact.trim()).filter(Boolean).slice(0, 6) : [];
+  const pundit = await createPunditEditorial({ seasonId, publishDate, section: String(input.section || "THE PUNDIT DESK").trim().slice(0, 80) || "THE PUNDIT DESK", headline, dek, body, imageKey, facts, createdByEmail: user.email });
+  response.status(201).json({ pundit });
+}));
+app.delete("/api/admin/pundits/:id", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const id = Number(request.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    response.status(400).json({ error: "INVALID_PUNDIT_ID", message: "That pundit story identifier is invalid." });
+    return;
+  }
+  response.json(await deletePunditEditorial(id));
+}));
 app.get("/api/cron/news", asyncRoute(async (request, response) => {
   const cronSecret = process.env.CRON_SECRET?.trim();
   const authorization = request.headers.authorization;
@@ -1068,6 +1116,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const scorerReviews = user.role === "admin" ? (await backfillScorerReviewRecords(), await scorerReviewRows()) : [];
   const news = await getNewsRows(season?.id === undefined ? undefined : Number(season.id));
   const seasonArchives = await getArchiveRows();
+  const pundits = await getPunditRows(season?.id === undefined ? undefined : Number(season.id));
   response.setHeader("Cache-Control", "no-store, max-age=0");
   response.json({
     season,
@@ -1079,6 +1128,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
     stats,
     scorerReviews,
     news,
+    pundits,
     seasonArchives,
   });
 }));

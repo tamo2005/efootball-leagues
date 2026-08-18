@@ -347,6 +347,23 @@ async function ensureNewsTables() {
         UNIQUE KEY season_archives_season_uq (season_id),
         INDEX season_archives_completed_idx (completed_at),
         CONSTRAINT season_archives_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+      query(`CREATE TABLE IF NOT EXISTS pundit_editorials (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        season_id BIGINT UNSIGNED NULL,
+        publish_date VARCHAR(10) NOT NULL,
+        section VARCHAR(80) NOT NULL DEFAULT 'THE PUNDIT DESK',
+        headline VARCHAR(180) NOT NULL,
+        dek VARCHAR(280) NOT NULL,
+        body TEXT NOT NULL,
+        image_key VARCHAR(80) NOT NULL DEFAULT 'goal-celebration',
+        facts_json JSON NULL,
+        created_by_email VARCHAR(255) NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        INDEX pundit_editorials_date_idx (publish_date, updated_at),
+        INDEX pundit_editorials_season_idx (season_id),
+        CONSTRAINT pundit_editorials_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
     ]).then(() => void 0).catch((error) => {
       tablesReady = null;
@@ -497,6 +514,25 @@ async function getNewsRows(seasonId) {
 async function getArchiveRows() {
   await ensureNewsTables();
   return query("SELECT id, season_id, season_name, completed_at, standings_json, player_stats_json, team_performance_json, highlights_json FROM season_archives ORDER BY completed_at DESC LIMIT 20", {});
+}
+async function getPunditRows(seasonId) {
+  await ensureNewsTables();
+  const where = seasonId === void 0 ? "" : "WHERE season_id = :seasonId OR season_id IS NULL";
+  return query(`SELECT id, season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at FROM pundit_editorials ${where} ORDER BY publish_date DESC, updated_at DESC, id DESC LIMIT 50`, seasonId === void 0 ? {} : { seasonId });
+}
+async function createPunditEditorial(input) {
+  await ensureNewsTables();
+  const now = Date.now();
+  const result = await query(`INSERT INTO pundit_editorials (season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at)
+    VALUES (:seasonId, :publishDate, :section, :headline, :dek, :body, :imageKey, :factsJson, :createdByEmail, :now, :now)`, { seasonId: input.seasonId, publishDate: input.publishDate, section: input.section, headline: input.headline, dek: input.dek, body: input.body, imageKey: input.imageKey, factsJson: json(input.facts || []), createdByEmail: input.createdByEmail, now });
+  const id = Number(result[0]?.insertId || 0);
+  const rows = await query("SELECT id, season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at FROM pundit_editorials WHERE id = :id LIMIT 1", { id });
+  return rows[0];
+}
+async function deletePunditEditorial(id) {
+  await ensureNewsTables();
+  await query("DELETE FROM pundit_editorials WHERE id = :id", { id });
+  return { deleted: true, id };
 }
 async function archiveSeasonSnapshot(seasonId) {
   await ensureNewsTables();
@@ -657,15 +693,32 @@ function clipText(value, length) {
   return value.trim().slice(0, length);
 }
 function modelContent(payload) {
-  const message = payload?.choices?.[0]?.message?.content;
+  const candidate = payload && typeof payload === "object" ? payload : null;
+  if (typeof candidate?.generated_text === "string") return candidate.generated_text;
+  if (typeof candidate?.suggestedFullName === "string" || typeof candidate?.suggestedName === "string") return JSON.stringify(candidate);
+  const choice = candidate?.choices?.[0];
+  const message = choice?.message?.content;
   if (typeof message === "string") return message;
-  if (Array.isArray(message)) return message.map((part) => typeof part === "string" ? part : String(part.text || "")).join("");
-  return "";
+  if (Array.isArray(message)) {
+    return message.map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object") return String(part.text || "");
+      return "";
+    }).join("");
+  }
+  if (message && typeof message === "object") return JSON.stringify(message);
+  return typeof choice?.text === "string" ? choice.text : "";
 }
 function parseScorerReview(raw, submittedName, knownPlayers) {
-  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
+  const fencedJson = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || raw;
+  const jsonText = fencedJson.match(/\{[\s\S]*\}/)?.[0];
   if (!jsonText) throw new Error("The name-review model did not return JSON.");
-  const parsed = JSON.parse(jsonText);
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    throw new Error("The name-review model returned malformed JSON.");
+  }
   const conservativeAlias = MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(submittedName)];
   const modelSuggestion = String(parsed.suggestedFullName || parsed.suggestedName || submittedName);
   const suggestedFullName = clipText(conservativeAlias || modelSuggestion, 120);
@@ -683,6 +736,46 @@ function parseScorerReview(raw, submittedName, knownPlayers) {
     reason: clipText(String(parsed.reason || "Name normalized for admin review."), 255),
     matchedEmail: matchedPlayer?.email || null,
     needsManualReview: parsed.needsManualReview !== false || !matchedPlayer
+  };
+}
+function localScorerReviewResult(submittedName, knownPlayers, previousNames) {
+  const normalized = normalizeName(submittedName);
+  const exactPlayer = knownPlayers.find((player) => normalizeName(player.displayName) === normalized);
+  if (exactPlayer) {
+    return {
+      suggestedFullName: clipText(exactPlayer.displayName, 120),
+      confidence: 1,
+      reason: "Matched the submitted name to an active player on this team\u2019s roster.",
+      matchedEmail: exactPlayer.email,
+      needsManualReview: true
+    };
+  }
+  const alias = MANUAL_FOOTBALLER_NAME_FALLBACKS[normalized];
+  if (alias) {
+    return {
+      suggestedFullName: alias,
+      confidence: 0.85,
+      reason: "Applied a conservative footballer-name alias. Confirm the team identity before approving.",
+      matchedEmail: null,
+      needsManualReview: true
+    };
+  }
+  const previous = previousNames.find((name) => normalizeName(name) === normalized);
+  if (previous) {
+    return {
+      suggestedFullName: clipText(previous, 120),
+      confidence: 0.75,
+      reason: "Matched the submitted name to a previous scorer name recorded for this team.",
+      matchedEmail: null,
+      needsManualReview: true
+    };
+  }
+  return {
+    suggestedFullName: clipText(submittedName, 120),
+    confidence: 0,
+    reason: "No confident local match was found. Edit the full name manually or retry AI analysis.",
+    matchedEmail: null,
+    needsManualReview: true
   };
 }
 async function processScorerNameReview(reviewId) {
@@ -708,13 +801,25 @@ async function processScorerNameReview(reviewId) {
       ORDER BY g.scorer_name LIMIT 100`,
     { teamId: review.team_id, goalId: review.goal_id || 0 }
   );
+  const localFallback = localScorerReviewResult(review.submitted_name, knownPlayers.map((player) => ({ email: player.email, displayName: player.display_name })), previousNames.map((item) => item.scorer_name));
   const config = huggingFaceConfig();
   if (!config) {
     await query(
-      `UPDATE scorer_name_reviews SET status = 'FAILED', error_message = :message, updated_at = :now WHERE id = :reviewId`,
-      { reviewId, message: "Hugging Face is not configured yet. Add HF_TOKEN in Vercel to analyze names.", now: Date.now() }
+      `UPDATE scorer_name_reviews
+          SET suggested_name = :suggestedName, confidence = :confidence,
+              reason = :reason, matched_email = :matchedEmail, status = 'PENDING',
+              model = 'local-conservative-fallback', error_message = NULL, updated_at = :now
+        WHERE id = :reviewId`,
+      {
+        reviewId,
+        suggestedName: localFallback.suggestedFullName,
+        confidence: localFallback.confidence,
+        reason: `${localFallback.reason} Hugging Face is not configured, so this suggestion was generated locally.`,
+        matchedEmail: localFallback.matchedEmail,
+        now: Date.now()
+      }
     );
-    return { reviewId, status: "FAILED" };
+    return { reviewId, status: "PENDING" };
   }
   const playerContext = knownPlayers.map((player) => `${player.display_name} <${player.email}>`).join("\\n") || "No registered players yet.";
   const previousContext = previousNames.map((item) => item.scorer_name).join(", ") || "No previous scorer names yet.";
@@ -732,7 +837,7 @@ async function processScorerNameReview(reviewId) {
     `Previous scorer names for this team: ${previousContext}`
   ].join("\\n\\n");
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 7e3);
+  const timeout = setTimeout(() => controller.abort(), 8500);
   try {
     const modelResponse = await fetch(HUGGING_FACE_CHAT_URL2, {
       method: "POST",
@@ -742,7 +847,7 @@ async function processScorerNameReview(reviewId) {
     });
     const payload = await modelResponse.json().catch(() => null);
     if (modelResponse.status === 402) {
-      const fallbackName = clipText(MANUAL_FOOTBALLER_NAME_FALLBACKS[normalizeName(review.submitted_name)] || review.submitted_name, 120);
+      const fallbackName = localFallback.suggestedFullName;
       await query(
         `UPDATE scorer_name_reviews
             SET suggested_name = :suggestedName, confidence = :confidence,
@@ -753,7 +858,7 @@ async function processScorerNameReview(reviewId) {
           reviewId,
           suggestedName: fallbackName,
           confidence: 0.5,
-          reason: "Hugging Face credits are temporarily unavailable (HTTP 402). The submitted name is retained as a manual-review suggestion; approve it only if it is correct.",
+          reason: `Hugging Face credits are temporarily unavailable (HTTP 402). ${localFallback.reason} Approve it only if it is correct.`,
           model: `${config.model} \xB7 manual fallback`,
           now: Date.now()
         }
@@ -1042,6 +1147,54 @@ app.post("/api/news/refresh", asyncRoute(async (request, response) => {
   const result = await refreshLeagueNews(Number(seasonRows[0].id));
   response.json(result);
 }));
+app.get("/api/pundit-editorials", asyncRoute(async (request, response) => {
+  const requestedSeason = request.query.seasonId === void 0 ? void 0 : Number(request.query.seasonId);
+  response.json({ pundits: await getPunditRows(Number.isInteger(requestedSeason) ? requestedSeason : void 0) });
+}));
+app.get("/api/admin/pundits", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const requestedSeason = request.query.seasonId === void 0 ? void 0 : Number(request.query.seasonId);
+  response.json({ pundits: await getPunditRows(Number.isInteger(requestedSeason) ? requestedSeason : void 0) });
+}));
+app.post("/api/admin/pundits", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const input = request.body && typeof request.body === "object" ? request.body : {};
+  const headline = String(input.headline || "").trim();
+  const dek = String(input.dek || "").trim();
+  const body = String(input.body || "").trim();
+  if (headline.length < 8 || headline.length > 180) {
+    response.status(400).json({ error: "INVALID_HEADLINE", message: "Headline must be between 8 and 180 characters." });
+    return;
+  }
+  if (dek.length < 12 || dek.length > 280) {
+    response.status(400).json({ error: "INVALID_DEK", message: "Standfirst must be between 12 and 280 characters." });
+    return;
+  }
+  if (body.length < 40 || body.length > 2e4) {
+    response.status(400).json({ error: "INVALID_BODY", message: "Pundit copy must be between 40 and 20,000 characters." });
+    return;
+  }
+  const requestedSeasonId = Number(input.seasonId);
+  const seasonId = Number.isInteger(requestedSeasonId) && requestedSeasonId > 0 ? requestedSeasonId : null;
+  const publishDate = /^\\d{4}-\\d{2}-\\d{2}$/.test(String(input.publishDate || "")) ? String(input.publishDate) : leagueDateKey2();
+  const imageKeys = /* @__PURE__ */ new Set(["goal-celebration", "goalkeeper-save", "player-registry-portrait", "football-heritage-captains", "league-hero"]);
+  const imageKey = imageKeys.has(String(input.imageKey)) ? String(input.imageKey) : "goal-celebration";
+  const facts = Array.isArray(input.facts) ? input.facts.map(String).map((fact) => fact.trim()).filter(Boolean).slice(0, 6) : [];
+  const pundit = await createPunditEditorial({ seasonId, publishDate, section: String(input.section || "THE PUNDIT DESK").trim().slice(0, 80) || "THE PUNDIT DESK", headline, dek, body, imageKey, facts, createdByEmail: user.email });
+  response.status(201).json({ pundit });
+}));
+app.delete("/api/admin/pundits/:id", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const id = Number(request.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    response.status(400).json({ error: "INVALID_PUNDIT_ID", message: "That pundit story identifier is invalid." });
+    return;
+  }
+  response.json(await deletePunditEditorial(id));
+}));
 app.get("/api/cron/news", asyncRoute(async (request, response) => {
   const cronSecret = process.env.CRON_SECRET?.trim();
   const authorization = request.headers.authorization;
@@ -1166,12 +1319,16 @@ function emailTimeLabel(timestamp) {
   return new Intl.DateTimeFormat("en-IN", { timeZone: LEAGUE_TIME_ZONE2, hour: "numeric", minute: "2-digit", hour12: true }).format(new Date(timestamp));
 }
 function notificationSender() {
-  const email = process.env.RESEND_FROM_EMAIL?.trim() || "peleefootball07@gmail.com";
-  const name = process.env.RESEND_FROM_NAME?.trim() || "League'de Khalpar Matchday";
+  const email = process.env.GMAIL_SENDER_EMAIL?.trim() || "peleefootball07@gmail.com";
+  const name = process.env.GMAIL_SENDER_NAME?.trim() || "League'de Khalpar Matchday";
   return `${name} <${email}>`;
 }
 function notificationProvider() {
-  return { apiKey: process.env.RESEND_API_KEY?.trim() || "", from: notificationSender() };
+  return {
+    relayUrl: process.env.GMAIL_RELAY_URL?.trim() || "",
+    relaySecret: process.env.GMAIL_RELAY_SECRET?.trim() || "",
+    from: notificationSender()
+  };
 }
 function notificationStandings(teams, confirmedMatches) {
   const base = calculateStandings(teams, confirmedMatches);
@@ -1258,7 +1415,8 @@ async function buildNextFixtureNotifications() {
     });
   }
   notifications.sort((a, b) => a.fixture.matchday - b.fixture.matchday || a.teamName.localeCompare(b.teamName));
-  return { seasonId: Number(season.id), seasonName: season.name, from: notificationSender(), providerConfigured: Boolean(notificationProvider().apiKey), notifications, sent: 0, skipped: notifications.filter((item) => !item.recipients.length).length, failed: [] };
+  const provider = notificationProvider();
+  return { seasonId: Number(season.id), seasonName: season.name, from: provider.from, providerConfigured: Boolean(provider.relayUrl && provider.relaySecret), notifications, sent: 0, skipped: notifications.filter((item) => !item.recipients.length).length, failed: [] };
 }
 function notificationHtml(notification) {
   const team = emailEscape(notification.teamName);
@@ -1291,42 +1449,57 @@ Open fixtures: https://efootball-leagues-one.vercel.app/`;
 async function sendNextFixtureNotifications(actorEmail) {
   const snapshot = await buildNextFixtureNotifications();
   const provider = notificationProvider();
-  if (!provider.apiKey) throw new ApiError(503, "EMAIL_PROVIDER_NOT_CONFIGURED", "Preview is ready, but RESEND_API_KEY is not configured in the production environment.");
-  const messages = snapshot.notifications.filter((notification) => notification.recipients.length).map((notification) => ({
-    from: provider.from,
-    to: notification.recipients.map((recipient) => recipient.email),
+  if (!provider.relayUrl || !provider.relaySecret) {
+    throw new ApiError(503, "EMAIL_PROVIDER_NOT_CONFIGURED", "Preview is ready, but the free Gmail relay is not configured. Add GMAIL_RELAY_URL and GMAIL_RELAY_SECRET in Vercel production.");
+  }
+  const messages = snapshot.notifications.filter((notification) => notification.recipients.length).flatMap((notification) => notification.recipients.map((recipient) => ({
+    to: recipient.email,
     subject: `Matchday ${notification.fixture.matchday} next up: ${notification.teamShortCode} vs ${notification.fixture.opponent.shortCode}`,
     html: notificationHtml(notification),
-    text: notificationText(notification)
-  }));
+    text: notificationText(notification),
+    teamId: notification.teamId,
+    fixtureId: notification.fixture.id
+  })));
   if (!messages.length) {
     throw new ApiError(409, "NO_NOTIFICATION_RECIPIENTS", "No active player accounts are assigned to teams with a next fixture.");
   }
   const fixtureKey = snapshot.notifications.map((notification) => `${notification.teamId}:${notification.fixture.id}`).join("|").slice(0, 180);
-  const resendResponse = await fetch("https://api.resend.com/emails/batch", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${provider.apiKey}`, "Content-Type": "application/json", "Idempotency-Key": `eleague-next-fixtures-${snapshot.seasonId}-${leagueDateKey2()}-${fixtureKey}`.slice(0, 256) },
-    body: JSON.stringify(messages)
-  });
-  const raw = await resendResponse.text();
-  if (!resendResponse.ok) {
-    let detail = raw;
-    try {
-      detail = String(JSON.parse(raw).message || JSON.parse(raw).error || raw);
-    } catch {
-    }
-    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `Resend could not deliver the match notifications: ${detail.slice(0, 220)}`);
+  const batchId = `eleague-next-fixtures-${snapshot.seasonId}-${leagueDateKey2()}-${fixtureKey}`.slice(0, 240);
+  let relayResponse;
+  try {
+    relayResponse = await fetch(provider.relayUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batchId, senderName: provider.from.split(" <")[0], secret: provider.relaySecret, messages })
+    });
+  } catch (error) {
+    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `The free Gmail relay could not be reached: ${error instanceof Error ? error.message : "network error"}`);
+  }
+  const raw = await relayResponse.text();
+  let relayResult = {};
+  try {
+    relayResult = raw ? JSON.parse(raw) : {};
+  } catch {
+  }
+  const failures = Array.isArray(relayResult.failed) ? relayResult.failed.map((item) => ({ email: String(item.email || item.to || "unknown recipient"), reason: String(item.reason || "Gmail relay rejected the message") })) : [];
+  if (!relayResponse.ok || relayResult.ok === false) {
+    const detail = String(relayResult.message || relayResult.error || raw || relayResponse.statusText || "unknown relay error");
+    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `The free Gmail relay could not deliver the match notifications: ${detail.slice(0, 220)}`);
+  }
+  const sent = Number.isFinite(Number(relayResult.sent)) ? Number(relayResult.sent) : Math.max(0, messages.length - failures.length);
+  if (sent === 0 && failures.length) {
+    throw new ApiError(502, "EMAIL_DELIVERY_FAILED", `The free Gmail relay rejected every recipient: ${failures[0].reason}`);
   }
   const result = await withTransaction(async (connection) => {
     await connection.query({
       sql: `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
             VALUES (:email, 'NOTIFY_NEXT_FIXTURES', 'season', :seasonId,
-                    JSON_OBJECT('sentTeams', :sentTeams, 'skippedTeams', :skippedTeams, 'fixtureKey', :fixtureKey, 'provider', 'resend'), :now)`,
+                    JSON_OBJECT('sentRecipients', :sentRecipients, 'failedRecipients', :failedRecipients, 'skippedTeams', :skippedTeams, 'fixtureKey', :fixtureKey, 'batchId', :batchId, 'remainingQuota', :remainingQuota, 'provider', 'gmail_apps_script'), :now)`,
       namedPlaceholders: true
-    }, { email: actorEmail, seasonId: String(snapshot.seasonId), sentTeams: messages.length, skippedTeams: snapshot.skipped, fixtureKey, now: Date.now() });
-    return { sent: messages.length };
+    }, { email: actorEmail, seasonId: String(snapshot.seasonId), sentRecipients: sent, failedRecipients: failures.length, skippedTeams: snapshot.skipped, fixtureKey, batchId, remainingQuota: String(relayResult.remainingQuota ?? ""), now: Date.now() });
+    return { sent };
   });
-  return { ...snapshot, sent: result.sent };
+  return { ...snapshot, sent: result.sent, failed: failures };
 }
 app.get("/api/admin/notifications/next-fixtures", asyncRoute(async (request, response) => {
   const user = requireAdmin(request, response);
@@ -1388,6 +1561,7 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const scorerReviews = user.role === "admin" ? (await backfillScorerReviewRecords(), await scorerReviewRows()) : [];
   const news = await getNewsRows(season?.id === void 0 ? void 0 : Number(season.id));
   const seasonArchives = await getArchiveRows();
+  const pundits = await getPunditRows(season?.id === void 0 ? void 0 : Number(season.id));
   response.setHeader("Cache-Control", "no-store, max-age=0");
   response.json({
     season,
@@ -1399,8 +1573,75 @@ app.get("/api/dashboard", asyncRoute(async (request, response) => {
     stats,
     scorerReviews,
     news,
+    pundits,
     seasonArchives
   });
+}));
+var EXPORT_REDACTED_COLUMNS = {
+  users: /* @__PURE__ */ new Set(["password_hash"]),
+  sessions: /* @__PURE__ */ new Set(["token_hash"])
+};
+function quoteSqlIdentifier(value) {
+  return `\`${value.replace(/`/g, "``")}\``;
+}
+function exportSafeValue(value) {
+  if (value instanceof Date) return value.toISOString();
+  if (Buffer.isBuffer(value)) return value.toString("base64");
+  if (Array.isArray(value)) return value.map(exportSafeValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, exportSafeValue(item)]));
+  }
+  return value;
+}
+async function buildDatabaseExport() {
+  const tableRows = await query(
+    `SELECT TABLE_NAME
+       FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+      ORDER BY TABLE_NAME`
+  );
+  const tables = {};
+  const redacted = {};
+  for (const tableRow of tableRows) {
+    const tableName = String(tableRow.TABLE_NAME);
+    const columns = await query(
+      `SELECT COLUMN_NAME
+         FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tableName
+        ORDER BY ORDINAL_POSITION`,
+      { tableName }
+    );
+    const hiddenColumns = EXPORT_REDACTED_COLUMNS[tableName] || /* @__PURE__ */ new Set();
+    const selectedColumns = columns.map((column) => String(column.COLUMN_NAME)).filter((column) => !hiddenColumns.has(column));
+    if (hiddenColumns.size) redacted[tableName] = Array.from(hiddenColumns);
+    if (!selectedColumns.length) {
+      tables[tableName] = [];
+      continue;
+    }
+    const rows = await query(
+      `SELECT ${selectedColumns.map(quoteSqlIdentifier).join(", ")} FROM ${quoteSqlIdentifier(tableName)}`
+    );
+    tables[tableName] = rows.map((row) => exportSafeValue(row));
+  }
+  return {
+    exportVersion: 1,
+    exportedAt: Date.now(),
+    exportedAtIst: new Intl.DateTimeFormat("en-IN", { timeZone: LEAGUE_TIME_ZONE2, dateStyle: "full", timeStyle: "long" }).format(/* @__PURE__ */ new Date()),
+    databaseName: new URL(process.env.DATABASE_URL || "mysql://localhost/unknown").pathname.slice(1),
+    tableCount: Object.keys(tables).length,
+    rowCounts: Object.fromEntries(Object.entries(tables).map(([table, rows]) => [table, rows.length])),
+    redacted,
+    tables
+  };
+}
+app.get("/api/admin/database/export", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const snapshot = await buildDatabaseExport();
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.setHeader("Content-Disposition", `attachment; filename="efootball-league-database-${leagueDateKey2()}.json"`);
+  response.json(snapshot);
 }));
 app.get("/api/teams", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
