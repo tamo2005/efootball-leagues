@@ -6,6 +6,7 @@ import { clearSession, createSession, findUserByEmail, getCurrentUser, hashPassw
 import { databaseHealth, isDatabaseConfigured, query, withTransaction } from "./db";
 import { assertScheduleIsCompatible, calculateStandings, generateRoundRobin } from "./league-service";
 import { archiveSeasonSnapshot, createPunditEditorial, deletePunditEditorial, ensureNewsTables, getArchiveRows, getNewsRows, getPunditRows, refreshLeagueNews } from "./news-service";
+import { addMatchProof, calendarIcs, createAward, createLeagueNotification, deleteAward, ensureProposedFeatureTables, getAwards, getCalendarMatches, getDiscordSettings, getHeadToHead, getMatchDetails, getNotificationFeed, getPredictionDashboard, markAllNotificationsRead, markNotificationRead, postToDiscord, reviewMatchProof, saveDiscordSettings, savePrediction, scorePredictions } from "./proposed-features";
 
 const app = express();
 app.set("trust proxy", true);
@@ -434,6 +435,17 @@ async function scorerReviewRows(status?: string) {
 const asyncRoute = (handler: (request: Request, response: Response) => Promise<void>) => (request: Request, response: Response, next: NextFunction) => {
   handler(request, response).catch(next);
 };
+
+async function notifyMatchParticipants(matchId: number, type: string, title: string, body: string, payload: Record<string, unknown>, dedupePrefix: string) {
+  const members = await query<Array<{ email: string }>>(
+    `SELECT DISTINCT tm.user_email AS email FROM team_memberships tm JOIN matches m ON m.id = :matchId
+      WHERE tm.team_id IN (m.home_team_id, m.away_team_id)`,
+    { matchId },
+  );
+  const admins = await query<Array<{ email: string }>>("SELECT email FROM users WHERE role = 'admin' AND status = 'ACTIVE'");
+  const recipients = Array.from(new Set([...members.map((row) => row.email), ...admins.map((row) => row.email)]));
+  await Promise.all(recipients.map((email) => createLeagueNotification({ userEmail: email, type, title, body, payload, dedupeKey: `${dedupePrefix}:${email}` })));
+}
 
 function requireUser(request: Request, response: Response) {
   const user = (request as Request & { user?: CurrentUser | null }).user;
@@ -950,15 +962,15 @@ async function buildNextFixtureNotifications() {
   }
   const teamById = new Map(teams.map((team) => [Number(team.id), team]));
   const notifications: NextFixtureNotification[] = [];
-  for (const [teamId, fixture] of nextFixtureByTeam) {
+  nextFixtureByTeam.forEach((fixture, teamId) => {
     const team = teamById.get(teamId);
-    if (!team) continue;
+    if (!team) return;
     const isHome = Number(fixture.home_team_id) === teamId;
     const opponentId = isHome ? Number(fixture.away_team_id) : Number(fixture.home_team_id);
     const opponent = teamById.get(opponentId);
     const table = standingMap.get(teamId);
     const opponentTable = standingMap.get(opponentId);
-    if (!opponent || !table || !opponentTable) continue;
+    if (!opponent || !table || !opponentTable) return;
     const kickoffAt = Number(fixture.kickoff_at);
     notifications.push({
       teamId,
@@ -978,7 +990,7 @@ async function buildNextFixtureNotifications() {
       table,
       opponentTable,
     });
-  }
+  });
   notifications.sort((a, b) => a.fixture.matchday - b.fixture.matchday || a.teamName.localeCompare(b.teamName));
   const provider = notificationProvider();
   return { seasonId: Number(season.id), seasonName: season.name, from: provider.from, providerConfigured: Boolean(provider.relayUrl && provider.relaySecret), notifications, sent: 0, skipped: notifications.filter((item) => !item.recipients.length).length, failed: [] as Array<{ email: string; reason: string }> };
@@ -1022,7 +1034,7 @@ async function sendNextFixtureNotifications(actorEmail: string) {
   }
   const fixtureKey = snapshot.notifications.map((notification) => `${notification.teamId}:${notification.fixture.id}`).join("|").slice(0, 180);
   const batchId = `eleague-next-fixtures-${snapshot.seasonId}-${leagueDateKey()}-${fixtureKey}`.slice(0, 240);
-  let relayResponse: Response;
+  let relayResponse: globalThis.Response;
   try {
     relayResponse = await fetch(provider.relayUrl, {
       method: "POST",
@@ -1071,9 +1083,158 @@ app.post("/api/admin/notifications/next-fixtures", asyncRoute(async (request, re
   response.json(await sendNextFixtureNotifications(user.email));
 }));
 
+app.get("/api/notifications", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  response.setHeader("Cache-Control", "no-store, max-age=0");
+  response.json(await getNotificationFeed(user.email));
+}));
+
+app.post("/api/notifications/:notificationId/read", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const id = Number(request.params.notificationId);
+  if (!Number.isInteger(id) || id <= 0) { response.status(400).json({ error: "INVALID_NOTIFICATION_ID", message: "That notification identifier is invalid." }); return; }
+  await markNotificationRead(id, user.email);
+  response.json({ ok: true });
+}));
+
+app.post("/api/notifications/read-all", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  await markAllNotificationsRead(user.email);
+  response.json({ ok: true });
+}));
+
+app.get("/api/matches/:matchId/details", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const matchId = Number(request.params.matchId);
+  if (!Number.isInteger(matchId) || matchId <= 0) { response.status(400).json({ error: "INVALID_MATCH_ID", message: "That fixture identifier is invalid." }); return; }
+  const details = await getMatchDetails(matchId, user.email, user.role === "admin");
+  if (!details) { response.status(404).json({ error: "MATCH_NOT_FOUND", message: "That fixture is not available to your account." }); return; }
+  response.json(details);
+}));
+
+app.post("/api/matches/:matchId/proof", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const matchId = Number(request.params.matchId);
+  const fileName = String(request.body?.fileName || "match-proof.png").trim().slice(0, 180);
+  const mimeType = String(request.body?.mimeType || "").trim().toLowerCase();
+  const dataUrl = String(request.body?.dataUrl || "");
+  const fileSize = Number(request.body?.fileSize || 0);
+  if (!Number.isInteger(matchId) || !/^image\/(png|jpeg|webp)$/.test(mimeType) || !dataUrl.startsWith(`data:${mimeType};base64,`) || !Number.isInteger(fileSize) || fileSize <= 0 || fileSize > 750000 || dataUrl.length > 1000000) {
+    response.status(400).json({ error: "INVALID_PROOF", message: "Upload a PNG, JPEG, or WebP screenshot smaller than 750 KB." });
+    return;
+  }
+  try {
+    const proof = await addMatchProof({ matchId, userEmail: user.email, fileName, mimeType, fileSize, dataUrl });
+    await notifyMatchParticipants(matchId, "PROOF_SUBMITTED", "New match evidence", `${user.displayName} attached evidence to a fixture awaiting review.`, { matchId, proofId: proof.id }, `proof:${proof.id}`);
+    response.status(201).json(proof);
+  } catch (error) {
+    response.status(403).json({ error: "PROOF_NOT_ALLOWED", message: error instanceof Error ? error.message : "This evidence could not be attached." });
+  }
+}));
+
+app.post("/api/admin/matches/:matchId/proofs/:proofId/review", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const proofId = Number(request.params.proofId);
+  const status = String(request.body?.status || "").toUpperCase() === "APPROVED" ? "APPROVED" : "REJECTED";
+  await reviewMatchProof(proofId, user.email, status, String(request.body?.note || "").trim());
+  response.json({ ok: true, status });
+}));
+
+app.get("/api/predictions", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const seasonId = request.query.seasonId === undefined ? undefined : Number(request.query.seasonId);
+  response.json(await getPredictionDashboard(user.email, Number.isInteger(seasonId) ? seasonId : undefined));
+}));
+
+app.post("/api/matches/:matchId/prediction", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const matchId = Number(request.params.matchId);
+  const homeScore = Number(request.body?.homeScore);
+  const awayScore = Number(request.body?.awayScore);
+  if (!Number.isInteger(matchId) || !Number.isInteger(homeScore) || !Number.isInteger(awayScore)) { response.status(400).json({ error: "INVALID_PREDICTION", message: "Enter two whole-number scores." }); return; }
+  try { await savePrediction(matchId, user.email, homeScore, awayScore); response.status(201).json({ ok: true }); } catch (error) { response.status(409).json({ error: "PREDICTION_NOT_ALLOWED", message: error instanceof Error ? error.message : "This prediction could not be saved." }); }
+}));
+
+app.get("/api/awards", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const seasonId = request.query.seasonId === undefined ? undefined : Number(request.query.seasonId);
+  response.json({ awards: await getAwards(Number.isInteger(seasonId) ? seasonId : undefined) });
+}));
+
+app.post("/api/admin/awards", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const seasonId = Number(request.body?.seasonId);
+  const matchday = Number(request.body?.matchday);
+  const awardType = String(request.body?.awardType || "PLAYER_OF_MATCHDAY").trim().slice(0, 40);
+  const subjectName = String(request.body?.subjectName || "").trim().slice(0, 160);
+  const citation = String(request.body?.citation || "").trim().slice(0, 2000);
+  const teamId = request.body?.teamId === null || request.body?.teamId === undefined ? null : Number(request.body.teamId);
+  if (!Number.isInteger(seasonId) || !Number.isInteger(matchday) || !subjectName || !citation) { response.status(400).json({ error: "INVALID_AWARD", message: "Season, matchday, subject, and citation are required." }); return; }
+  response.status(201).json(await createAward({ seasonId, matchday, awardType, subjectName, teamId: Number.isInteger(teamId) ? teamId : null, citation, createdByEmail: user.email }));
+}));
+
+app.delete("/api/admin/awards/:awardId", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await deleteAward(Number(request.params.awardId));
+  response.json({ ok: true });
+}));
+
+app.get("/api/head-to-head", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const teamA = Number(request.query.teamA);
+  const teamB = Number(request.query.teamB);
+  if (!Number.isInteger(teamA) || !Number.isInteger(teamB) || teamA === teamB) { response.status(400).json({ error: "INVALID_HEAD_TO_HEAD", message: "Choose two different teams." }); return; }
+  response.json(await getHeadToHead(teamA, teamB));
+}));
+
+app.get("/api/calendar.ics", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const seasonId = request.query.seasonId === undefined ? undefined : Number(request.query.seasonId);
+  const rows = await getCalendarMatches(user.email, Number.isInteger(seasonId) ? seasonId : undefined);
+  response.setHeader("Content-Type", "text/calendar; charset=utf-8");
+  response.setHeader("Content-Disposition", "attachment; filename=eleague-fixtures.ics");
+  response.send(calendarIcs(rows));
+}));
+
+app.get("/api/admin/discord-settings", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  response.json(await getDiscordSettings());
+}));
+
+app.post("/api/admin/discord-settings", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const webhookUrl = String(request.body?.webhookUrl || "").trim();
+  if (webhookUrl && !/^https:\/\/discord(?:app)?\.com\/api\/webhooks\//.test(webhookUrl)) { response.status(400).json({ error: "INVALID_DISCORD_WEBHOOK", message: "Enter a valid Discord webhook URL." }); return; }
+  await saveDiscordSettings({ webhookUrl, enabled: Boolean(request.body?.enabled), label: String(request.body?.label || "League Discord"), email: user.email });
+  response.json(await getDiscordSettings());
+}));
+
+app.post("/api/admin/discord/test", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const result = await postToDiscord(`eLeague connection check by ${user.displayName}.`);
+  response.json(result);
+}));
+
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
+  await ensureProposedFeatureTables();
   await ensureNewsTables();
   const seasonRows = await query<Array<{ id: number; name: string; status: string; matchday_count: number; current_matchday: number }>>("SELECT id, name, status, matchday_count, current_matchday FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
   const season = seasonRows[0] || null;
@@ -1852,6 +2013,7 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
       [user.email, String(matchId), homeScore, awayScore, now],
     );
   });
+  await notifyMatchParticipants(matchId, "RESULT_NEEDS_CONFIRMATION", "Result awaiting confirmation", "A home-team result has been submitted and is ready for league review.", { matchId, status: "PENDING" }, `pending-result:${matchId}`);
   response.status(201).json({ matchId, status: "PENDING" });
 }));
 
@@ -1875,6 +2037,17 @@ app.post("/api/matches/:matchId/confirm", asyncRoute(async (request, response) =
      VALUES (:email, 'CONFIRM_RESULT', 'match', :matchId, JSON_OBJECT(), :now)`,
     { email: user.email, matchId: String(matchId), now },
   );
+  const confirmedRows = await query<Array<{ home_team_name: string; away_team_name: string; home_score: number; away_score: number; matchday: number }>>(
+    `SELECT h.name home_team_name, a.name away_team_name, m.home_score, m.away_score, m.matchday
+       FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id WHERE m.id = :matchId LIMIT 1`,
+    { matchId },
+  );
+  const confirmed = confirmedRows[0];
+  if (confirmed) {
+    await scorePredictions(matchId, Number(confirmed.home_score), Number(confirmed.away_score));
+    await notifyMatchParticipants(matchId, "RESULT_CONFIRMED", "Official result confirmed", `${confirmed.home_team_name} ${confirmed.home_score}–${confirmed.away_score} ${confirmed.away_team_name} is now official.`, { matchId, matchday: confirmed.matchday }, `confirmed-result:${matchId}`);
+    try { await postToDiscord(`Official result — Matchday ${confirmed.matchday}: ${confirmed.home_team_name} ${confirmed.home_score}–${confirmed.away_score} ${confirmed.away_team_name}`); } catch (error) { console.warn("Discord result post failed", error); }
+  }
   response.json({ matchId, status: "CONFIRMED" });
 }));
 

@@ -177,3 +177,81 @@ CREATE TABLE IF NOT EXISTS season_archives (
   INDEX season_archives_completed_idx (completed_at),
   CONSTRAINT season_archives_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS league_notifications (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_email VARCHAR(320) NOT NULL,
+  notification_type VARCHAR(80) NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  body TEXT NOT NULL,
+  payload_json JSON NULL,
+  dedupe_key VARCHAR(220) NULL,
+  read_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  INDEX notifications_user_idx (user_email, created_at),
+  INDEX notifications_unread_idx (user_email, read_at),
+  UNIQUE KEY notifications_dedupe_uq (user_email, dedupe_key),
+  CONSTRAINT notifications_user_fk FOREIGN KEY (user_email) REFERENCES users(email) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS match_predictions (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  match_id BIGINT UNSIGNED NOT NULL,
+  user_email VARCHAR(320) NOT NULL,
+  home_score INT NOT NULL,
+  away_score INT NOT NULL,
+  points INT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE KEY predictions_match_user_uq (match_id, user_email),
+  INDEX predictions_user_idx (user_email, updated_at),
+  CONSTRAINT predictions_match_fk FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  CONSTRAINT predictions_user_fk FOREIGN KEY (user_email) REFERENCES users(email) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS match_proofs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  match_id BIGINT UNSIGNED NOT NULL,
+  uploaded_by_email VARCHAR(320) NOT NULL,
+  file_name VARCHAR(180) NOT NULL,
+  mime_type VARCHAR(80) NOT NULL,
+  file_size INT NOT NULL,
+  data_url MEDIUMTEXT NOT NULL,
+  status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING',
+  review_note VARCHAR(255) NULL,
+  reviewed_by_email VARCHAR(320) NULL,
+  reviewed_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  INDEX proofs_match_idx (match_id, created_at),
+  CONSTRAINT proofs_match_fk FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  CONSTRAINT proofs_uploader_fk FOREIGN KEY (uploaded_by_email) REFERENCES users(email) ON DELETE CASCADE,
+  CONSTRAINT proofs_reviewer_fk FOREIGN KEY (reviewed_by_email) REFERENCES users(email) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS matchday_awards (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  season_id BIGINT UNSIGNED NOT NULL,
+  matchday INT NOT NULL,
+  award_type VARCHAR(40) NOT NULL,
+  subject_name VARCHAR(160) NOT NULL,
+  team_id BIGINT UNSIGNED NULL,
+  citation TEXT NOT NULL,
+  created_by_email VARCHAR(320) NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY awards_round_type_uq (season_id, matchday, award_type),
+  INDEX awards_season_idx (season_id, matchday),
+  CONSTRAINT awards_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE CASCADE,
+  CONSTRAINT awards_team_fk FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE SET NULL,
+  CONSTRAINT awards_creator_fk FOREIGN KEY (created_by_email) REFERENCES users(email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS discord_settings (
+  id TINYINT NOT NULL PRIMARY KEY,
+  webhook_url VARCHAR(500) NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  label VARCHAR(120) NOT NULL DEFAULT 'League Discord',
+  updated_by_email VARCHAR(320) NULL,
+  updated_at BIGINT NOT NULL,
+  CONSTRAINT discord_settings_user_fk FOREIGN KEY (updated_by_email) REFERENCES users(email) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

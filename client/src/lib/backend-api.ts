@@ -500,3 +500,49 @@ export function backendRejectScorerReview(reviewId: number) {
 export function backendRescheduleMatch(matchId: string, kickoffAt: number, reason: string) {
   return request<{ matchId: number; status: string; kickoffAt: number; reason: string }>(`/api/matches/${matchId}/reschedule`, { method: "POST", body: JSON.stringify({ kickoffAt, reason }) });
 }
+
+
+export type ProposedNotification = {
+  id: number;
+  type: string;
+  title: string;
+  body: string;
+  payload: Record<string, unknown>;
+  read: boolean;
+  createdAt: number;
+};
+
+export type BackendMatchDetails = {
+  match: { id: number; seasonId: number; matchday: number; kickoffAt: number; status: string; homeScore: number | null; awayScore: number | null; home: { id: number; name: string; shortCode: string; accent: string }; away: { id: number; name: string; shortCode: string; accent: string } };
+  goals: Array<{ id: number; teamId: number; teamName: string; teamShortCode: string; playerName: string; playerEmail: string | null; minute: number }>;
+  proofs: Array<{ id: number; uploadedByEmail: string; fileName: string; mimeType: string; fileSize: number; dataUrl: string; status: "PENDING" | "APPROVED" | "REJECTED"; reviewNote: string | null; createdAt: number; reviewedAt: number | null }>;
+  predictions: Array<{ userEmail: string; displayName: string; homeScore: number; awayScore: number; points: number | null; updatedAt: number; isMine: boolean }>;
+  meetings: Array<{ id: number; matchday: number; kickoffAt: number; homeScore: number; awayScore: number; homeTeamName: string; awayTeamName: string }>;
+};
+
+export type PredictionDashboard = {
+  mine: Array<{ matchId: number; matchday: number; kickoffAt: number; status: string; homeTeamName: string; awayTeamName: string; homeScore: number; awayScore: number; points: number | null; updatedAt: number }>;
+  leaderboard: Array<{ rank: number; email: string; displayName: string; points: number; predictions: number; scoredPredictions: number }>;
+};
+
+export type FeatureAward = { id: number; seasonId: number; matchday: number; awardType: string; subjectName: string; teamId: number | null; teamName: string | null; citation: string; createdAt: number };
+export type HeadToHeadResult = { meetings: Array<{ id: number; matchday: number; kickoffAt: number; homeTeamId: number; awayTeamId: number; homeScore: number; awayScore: number; homeTeamName: string; awayTeamName: string }>; aggregate: { teamA: { wins: number; draws: number; goals: number }; teamB: { wins: number; draws: number; goals: number } } };
+export type DiscordSettings = { enabled: boolean; label: string; configured: boolean; updatedAt: number | null };
+
+export function backendGetNotifications() { return request<{ notifications: ProposedNotification[]; unreadCount: number }>("/api/notifications"); }
+export function backendMarkNotificationRead(id: number) { return request<{ ok: true }>(`/api/notifications/${id}/read`, { method: "POST" }); }
+export function backendMarkAllNotificationsRead() { return request<{ ok: true }>("/api/notifications/read-all", { method: "POST" }); }
+export function backendGetMatchDetails(matchId: number) { return request<BackendMatchDetails>(`/api/matches/${matchId}/details`); }
+export function backendSavePrediction(matchId: number, homeScore: number, awayScore: number) { return request<{ ok: true }>(`/api/matches/${matchId}/prediction`, { method: "POST", body: JSON.stringify({ homeScore, awayScore }) }); }
+export function backendGetPredictions(seasonId?: number) { const suffix = seasonId === undefined ? "" : `?seasonId=${encodeURIComponent(String(seasonId))}`; return request<PredictionDashboard>(`/api/predictions${suffix}`); }
+export function backendUploadProof(matchId: number, input: { fileName: string; mimeType: string; fileSize: number; dataUrl: string }) { return request<{ id: number }>(`/api/matches/${matchId}/proof`, { method: "POST", body: JSON.stringify(input) }); }
+export function backendReviewProof(matchId: number, proofId: number, status: "APPROVED" | "REJECTED", note = "") { return request<{ ok: true; status: string }>(`/api/admin/matches/${matchId}/proofs/${proofId}/review`, { method: "POST", body: JSON.stringify({ status, note }) }); }
+export function backendGetAwards(seasonId?: number) { const suffix = seasonId === undefined ? "" : `?seasonId=${encodeURIComponent(String(seasonId))}`; return request<{ awards: FeatureAward[] }>(`/api/awards${suffix}`); }
+export function backendCreateAward(input: { seasonId: number; matchday: number; awardType: string; subjectName: string; teamId?: number | null; citation: string }) { return request<{ id: number }>("/api/admin/awards", { method: "POST", body: JSON.stringify(input) }); }
+export function backendDeleteAward(id: number) { return request<{ ok: true }>(`/api/admin/awards/${id}`, { method: "DELETE" }); }
+export function backendGetHeadToHead(teamA: number, teamB: number) { return request<HeadToHeadResult>(`/api/head-to-head?teamA=${encodeURIComponent(String(teamA))}&teamB=${encodeURIComponent(String(teamB))}`); }
+export async function backendDownloadCalendar(seasonId?: number) { const suffix = seasonId === undefined ? "" : `?seasonId=${encodeURIComponent(String(seasonId))}`; const response = await fetch(`/api/calendar.ics${suffix}`, { credentials: "include", cache: "no-store" }); if (!response.ok) throw new Error((await response.text()) || "Calendar export failed."); return { blob: await response.blob(), filename: "eleague-fixtures.ics" }; }
+export function backendGetDiscordSettings() { return request<DiscordSettings>("/api/admin/discord-settings"); }
+export function backendSaveDiscordSettings(input: { webhookUrl: string; enabled: boolean; label: string }) { return request<DiscordSettings>("/api/admin/discord-settings", { method: "POST", body: JSON.stringify(input) }); }
+export function backendTestDiscord() { return request<{ posted: boolean; reason?: string }>("/api/admin/discord/test", { method: "POST" }); }
+export function backendGetPunditFeed() { return request<{ pundits: BackendPunditEditorial[] }>("/api/pundit-editorials"); }

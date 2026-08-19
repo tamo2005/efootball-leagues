@@ -363,7 +363,7 @@ export async function createPunditEditorial(input: { seasonId: number | null; pu
   const factsPayload = editorial ? { facts, editorial } : facts;
   const result = await query<{ insertId: number }>(`INSERT INTO pundit_editorials (season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at)
     VALUES (:seasonId, :publishDate, :section, :headline, :dek, :body, :imageKey, :factsJson, :createdByEmail, :now, :now)`, { seasonId: input.seasonId, publishDate: input.publishDate, section: input.section, headline: input.headline, dek: input.dek, body: input.body, imageKey: input.imageKey, factsJson: json(factsPayload), createdByEmail: input.createdByEmail, now });
-  const id = Number(result[0]?.insertId || 0);
+  const id = Number(result.insertId || 0);
   const rows = await query<PunditRow[]>("SELECT id, season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at FROM pundit_editorials WHERE id = :id LIMIT 1", { id });
   return rows[0];
 }

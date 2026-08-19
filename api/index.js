@@ -627,7 +627,7 @@ async function createPunditEditorial(input) {
   const factsPayload = editorial ? { facts, editorial } : facts;
   const result = await query(`INSERT INTO pundit_editorials (season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at)
     VALUES (:seasonId, :publishDate, :section, :headline, :dek, :body, :imageKey, :factsJson, :createdByEmail, :now, :now)`, { seasonId: input.seasonId, publishDate: input.publishDate, section: input.section, headline: input.headline, dek: input.dek, body: input.body, imageKey: input.imageKey, factsJson: json(factsPayload), createdByEmail: input.createdByEmail, now });
-  const id = Number(result[0]?.insertId || 0);
+  const id = Number(result.insertId || 0);
   const rows = await query("SELECT id, season_id, publish_date, section, headline, dek, body, image_key, facts_json, created_by_email, created_at, updated_at FROM pundit_editorials WHERE id = :id LIMIT 1", { id });
   return rows[0];
 }
@@ -649,6 +649,303 @@ async function archiveSeasonSnapshot(seasonId) {
   await query("UPDATE seasons SET status = 'COMPLETED', updated_at = :now WHERE id = :seasonId", { seasonId, now: Date.now() });
   await refreshLeagueNews(seasonId);
   return { archived: !existing[0], seasonId, status: "COMPLETED" };
+}
+
+// server/proposed-features.ts
+var featureTablesReady = null;
+async function ensureProposedFeatureTables() {
+  if (!featureTablesReady) {
+    featureTablesReady = (async () => {
+      await query(`CREATE TABLE IF NOT EXISTS league_notifications (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_email VARCHAR(320) NOT NULL,
+        notification_type VARCHAR(80) NOT NULL,
+        title VARCHAR(180) NOT NULL,
+        body TEXT NOT NULL,
+        payload_json JSON NULL,
+        dedupe_key VARCHAR(220) NULL,
+        read_at BIGINT NULL,
+        created_at BIGINT NOT NULL,
+        INDEX notifications_user_idx (user_email, created_at),
+        INDEX notifications_unread_idx (user_email, read_at),
+        UNIQUE KEY notifications_dedupe_uq (user_email, dedupe_key),
+        CONSTRAINT notifications_user_fk FOREIGN KEY (user_email) REFERENCES users(email) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`);
+      await query(`CREATE TABLE IF NOT EXISTS match_predictions (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        match_id BIGINT UNSIGNED NOT NULL,
+        user_email VARCHAR(320) NOT NULL,
+        home_score INT NOT NULL,
+        away_score INT NOT NULL,
+        points INT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        UNIQUE KEY predictions_match_user_uq (match_id, user_email),
+        INDEX predictions_user_idx (user_email, updated_at),
+        CONSTRAINT predictions_match_fk FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+        CONSTRAINT predictions_user_fk FOREIGN KEY (user_email) REFERENCES users(email) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`);
+      await query(`CREATE TABLE IF NOT EXISTS match_proofs (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        match_id BIGINT UNSIGNED NOT NULL,
+        uploaded_by_email VARCHAR(320) NOT NULL,
+        file_name VARCHAR(180) NOT NULL,
+        mime_type VARCHAR(80) NOT NULL,
+        file_size INT NOT NULL,
+        data_url MEDIUMTEXT NOT NULL,
+        status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING',
+        review_note VARCHAR(255) NULL,
+        reviewed_by_email VARCHAR(320) NULL,
+        reviewed_at BIGINT NULL,
+        created_at BIGINT NOT NULL,
+        INDEX proofs_match_idx (match_id, created_at),
+        CONSTRAINT proofs_match_fk FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+        CONSTRAINT proofs_uploader_fk FOREIGN KEY (uploaded_by_email) REFERENCES users(email) ON DELETE CASCADE,
+        CONSTRAINT proofs_reviewer_fk FOREIGN KEY (reviewed_by_email) REFERENCES users(email) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`);
+      await query(`CREATE TABLE IF NOT EXISTS matchday_awards (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        season_id BIGINT UNSIGNED NOT NULL,
+        matchday INT NOT NULL,
+        award_type VARCHAR(40) NOT NULL,
+        subject_name VARCHAR(160) NOT NULL,
+        team_id BIGINT UNSIGNED NULL,
+        citation TEXT NOT NULL,
+        created_by_email VARCHAR(320) NOT NULL,
+        created_at BIGINT NOT NULL,
+        UNIQUE KEY awards_round_type_uq (season_id, matchday, award_type),
+        INDEX awards_season_idx (season_id, matchday),
+        CONSTRAINT awards_season_fk FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE CASCADE,
+        CONSTRAINT awards_team_fk FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE SET NULL,
+        CONSTRAINT awards_creator_fk FOREIGN KEY (created_by_email) REFERENCES users(email)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`);
+      await query(`CREATE TABLE IF NOT EXISTS discord_settings (
+        id TINYINT NOT NULL PRIMARY KEY,
+        webhook_url VARCHAR(500) NULL,
+        enabled TINYINT(1) NOT NULL DEFAULT 0,
+        label VARCHAR(120) NOT NULL DEFAULT 'League Discord',
+        updated_by_email VARCHAR(320) NULL,
+        updated_at BIGINT NOT NULL,
+        CONSTRAINT discord_settings_user_fk FOREIGN KEY (updated_by_email) REFERENCES users(email) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`);
+    })().catch((error) => {
+      featureTablesReady = null;
+      throw error;
+    });
+  }
+  await featureTablesReady;
+}
+function parseJson(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return null;
+  }
+}
+async function createLeagueNotification(input) {
+  await ensureProposedFeatureTables();
+  const now = Date.now();
+  await query(
+    `INSERT INTO league_notifications (user_email, notification_type, title, body, payload_json, dedupe_key, created_at)
+     VALUES (:userEmail, :type, :title, :body, :payload, :dedupeKey, :now)
+     ON DUPLICATE KEY UPDATE title = VALUES(title), body = VALUES(body), payload_json = VALUES(payload_json)`,
+    { userEmail: input.userEmail, type: input.type, title: input.title, body: input.body, payload: JSON.stringify(input.payload || {}), dedupeKey: input.dedupeKey || null, now }
+  );
+}
+async function getNotificationFeed(userEmail) {
+  await ensureProposedFeatureTables();
+  const rows = await query(`SELECT id, notification_type, title, body, payload_json, read_at, created_at
+    FROM league_notifications WHERE user_email = :userEmail ORDER BY created_at DESC LIMIT 80`, { userEmail });
+  return { notifications: rows.map((row) => ({ id: Number(row.id), type: row.notification_type, title: row.title, body: row.body, payload: parseJson(row.payload_json) || {}, read: row.read_at !== null, createdAt: Number(row.created_at) })), unreadCount: rows.filter((row) => row.read_at === null).length };
+}
+async function markNotificationRead(id, userEmail) {
+  await ensureProposedFeatureTables();
+  await query("UPDATE league_notifications SET read_at = :now WHERE id = :id AND user_email = :userEmail", { id, userEmail, now: Date.now() });
+}
+async function markAllNotificationsRead(userEmail) {
+  await ensureProposedFeatureTables();
+  await query("UPDATE league_notifications SET read_at = :now WHERE user_email = :userEmail AND read_at IS NULL", { userEmail, now: Date.now() });
+}
+async function matchAccess(matchId, userEmail) {
+  const rows = await query(`SELECT m.id, m.season_id, m.matchday, m.kickoff_at, m.status, m.home_score, m.away_score,
+    m.home_team_id, m.away_team_id, h.name home_team_name, h.short_code home_short_code, h.accent home_accent,
+    a.name away_team_name, a.short_code away_short_code, a.accent away_accent,
+    EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_id = m.home_team_id AND tm.user_email = :userEmail) AS is_home_member,
+    EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_id = m.away_team_id AND tm.user_email = :userEmail) AS is_away_member
+    FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id WHERE m.id = :matchId LIMIT 1`, { matchId, userEmail });
+  return rows[0] || null;
+}
+async function getMatchDetails(matchId, userEmail, isAdmin) {
+  await ensureProposedFeatureTables();
+  const match = await matchAccess(matchId, userEmail);
+  if (!match) return null;
+  if (!isAdmin && !Number(match.is_home_member) && !Number(match.is_away_member)) return null;
+  const [goals, proofs, predictionRows, meetings] = await Promise.all([
+    query(`SELECT g.id, g.team_id, g.scorer_name, g.player_email, g.minute, t.name team_name, t.short_code team_short_code
+      FROM goals g JOIN teams t ON t.id = g.team_id WHERE g.match_id = :matchId ORDER BY g.minute, g.id`, { matchId }),
+    query(`SELECT id, uploaded_by_email, file_name, mime_type, file_size, data_url, status, review_note, created_at, reviewed_at
+      FROM match_proofs WHERE match_id = :matchId ORDER BY created_at DESC`, { matchId }),
+    query(`SELECT p.user_email, p.home_score, p.away_score, p.points, p.updated_at, u.display_name
+      FROM match_predictions p JOIN users u ON u.email = p.user_email WHERE p.match_id = :matchId ORDER BY p.updated_at DESC`, { matchId }),
+    query(`SELECT m.id, m.matchday, m.kickoff_at, m.home_score, m.away_score, m.status, h.name home_team_name, a.name away_team_name
+      FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id
+      WHERE m.status = 'CONFIRMED' AND ((m.home_team_id = :homeTeam AND m.away_team_id = :awayTeam) OR (m.home_team_id = :awayTeam AND m.away_team_id = :homeTeam))
+      ORDER BY m.kickoff_at DESC LIMIT 5`, { homeTeam: Number(match.home_team_id), awayTeam: Number(match.away_team_id) })
+  ]);
+  return {
+    match: { id: Number(match.id), seasonId: Number(match.season_id), matchday: Number(match.matchday), kickoffAt: Number(match.kickoff_at), status: match.status, homeScore: match.home_score === null ? null : Number(match.home_score), awayScore: match.away_score === null ? null : Number(match.away_score), home: { id: Number(match.home_team_id), name: match.home_team_name, shortCode: match.home_short_code, accent: match.home_accent }, away: { id: Number(match.away_team_id), name: match.away_team_name, shortCode: match.away_short_code, accent: match.away_accent } },
+    goals: goals.map((goal) => ({ id: Number(goal.id), teamId: Number(goal.team_id), teamName: goal.team_name, teamShortCode: goal.team_short_code, playerName: goal.scorer_name, playerEmail: goal.player_email, minute: Number(goal.minute) })),
+    proofs: proofs.map((proof) => ({ id: Number(proof.id), uploadedByEmail: proof.uploaded_by_email, fileName: proof.file_name, mimeType: proof.mime_type, fileSize: Number(proof.file_size), dataUrl: proof.data_url, status: proof.status, reviewNote: proof.review_note, createdAt: Number(proof.created_at), reviewedAt: proof.reviewed_at === null ? null : Number(proof.reviewed_at) })),
+    predictions: predictionRows.map((prediction) => ({ userEmail: prediction.user_email, displayName: prediction.display_name, homeScore: Number(prediction.home_score), awayScore: Number(prediction.away_score), points: prediction.points === null ? null : Number(prediction.points), updatedAt: Number(prediction.updated_at), isMine: prediction.user_email === userEmail })),
+    meetings: meetings.map((meeting) => ({ id: Number(meeting.id), matchday: Number(meeting.matchday), kickoffAt: Number(meeting.kickoff_at), homeScore: Number(meeting.home_score), awayScore: Number(meeting.away_score), homeTeamName: meeting.home_team_name, awayTeamName: meeting.away_team_name }))
+  };
+}
+async function addMatchProof(input) {
+  await ensureProposedFeatureTables();
+  const match = await matchAccess(input.matchId, input.userEmail);
+  if (!match || !Number(match.is_home_member)) throw new Error("Only an active home-team member can attach match proof.");
+  if (match.status === "CONFIRMED") throw new Error("Confirmed matches cannot receive new evidence.");
+  const result = await query(`INSERT INTO match_proofs (match_id, uploaded_by_email, file_name, mime_type, file_size, data_url, created_at)
+    VALUES (:matchId, :userEmail, :fileName, :mimeType, :fileSize, :dataUrl, :now)`, { ...input, now: Date.now() });
+  return { id: Number(result.insertId || 0) };
+}
+async function reviewMatchProof(proofId, reviewerEmail, status, note) {
+  await ensureProposedFeatureTables();
+  await query(`UPDATE match_proofs SET status = :status, review_note = :note, reviewed_by_email = :reviewerEmail, reviewed_at = :now WHERE id = :proofId`, { proofId, status, note: note.slice(0, 255), reviewerEmail, now: Date.now() });
+}
+async function savePrediction(matchId, userEmail, homeScore, awayScore) {
+  await ensureProposedFeatureTables();
+  if (homeScore < 0 || awayScore < 0 || homeScore > 30 || awayScore > 30) throw new Error("Predictions must use scores from 0 to 30.");
+  const match = await matchAccess(matchId, userEmail);
+  if (!match || !Number(match.is_home_member) && !Number(match.is_away_member)) throw new Error("Only players in this fixture can predict it.");
+  if (match.status !== "SCHEDULED" && match.status !== "POSTPONED") throw new Error("Predictions close when a result is submitted.");
+  if (Number(match.kickoff_at) <= Date.now()) throw new Error("Predictions close at kickoff.");
+  const now = Date.now();
+  await query(`INSERT INTO match_predictions (match_id, user_email, home_score, away_score, created_at, updated_at)
+    VALUES (:matchId, :userEmail, :homeScore, :awayScore, :now, :now)
+    ON DUPLICATE KEY UPDATE home_score = VALUES(home_score), away_score = VALUES(away_score), updated_at = VALUES(updated_at)`, { matchId, userEmail, homeScore, awayScore, now });
+}
+async function getPredictionDashboard(userEmail, seasonId) {
+  await ensureProposedFeatureTables();
+  const seasonFilter = Number.isInteger(seasonId) ? "AND m.season_id = :seasonId" : "";
+  const params = { userEmail };
+  if (Number.isInteger(seasonId)) params.seasonId = seasonId;
+  const [mine, leaderboard] = await Promise.all([
+    query(`SELECT p.match_id, p.home_score, p.away_score, p.points, p.updated_at, m.matchday, m.kickoff_at, m.status, h.name home_team_name, a.name away_team_name
+      FROM match_predictions p JOIN matches m ON m.id = p.match_id JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id
+      WHERE p.user_email = :userEmail ${seasonFilter} ORDER BY m.kickoff_at DESC LIMIT 100`, params),
+    query(`SELECT p.user_email, u.display_name, COALESCE(SUM(p.points), 0) points, COUNT(*) predictions, SUM(p.points IS NOT NULL) scored_predictions
+      FROM match_predictions p JOIN users u ON u.email = p.user_email JOIN matches m ON m.id = p.match_id
+      WHERE p.points IS NOT NULL ${seasonFilter} GROUP BY p.user_email, u.display_name ORDER BY points DESC, predictions ASC LIMIT 50`, params)
+  ]);
+  return { mine: mine.map((row) => ({ matchId: Number(row.match_id), matchday: Number(row.matchday), kickoffAt: Number(row.kickoff_at), status: row.status, homeTeamName: row.home_team_name, awayTeamName: row.away_team_name, homeScore: Number(row.home_score), awayScore: Number(row.away_score), points: row.points === null ? null : Number(row.points), updatedAt: Number(row.updated_at) })), leaderboard: leaderboard.map((row, index) => ({ rank: index + 1, email: row.user_email, displayName: row.display_name, points: Number(row.points), predictions: Number(row.predictions), scoredPredictions: Number(row.scored_predictions) })) };
+}
+async function scorePredictions(matchId, homeScore, awayScore) {
+  await ensureProposedFeatureTables();
+  const rows = await query("SELECT id, home_score, away_score FROM match_predictions WHERE match_id = :matchId", { matchId });
+  for (const row of rows) {
+    const exact = Number(row.home_score) === homeScore && Number(row.away_score) === awayScore;
+    const outcome = Math.sign(Number(row.home_score) - Number(row.away_score)) === Math.sign(homeScore - awayScore);
+    const points = exact ? 5 : outcome ? 2 : 0;
+    await query("UPDATE match_predictions SET points = :points, updated_at = :now WHERE id = :id", { id: row.id, points, now: Date.now() });
+  }
+}
+async function getAwards(seasonId) {
+  await ensureProposedFeatureTables();
+  const params = {};
+  const filter = Number.isInteger(seasonId) ? "WHERE a.season_id = :seasonId" : "";
+  if (Number.isInteger(seasonId)) params.seasonId = seasonId;
+  const rows = await query(`SELECT a.id, a.season_id, a.matchday, a.award_type, a.subject_name, a.team_id, t.name team_name, a.citation, a.created_at
+    FROM matchday_awards a LEFT JOIN teams t ON t.id = a.team_id ${filter} ORDER BY a.season_id DESC, a.matchday DESC, a.id DESC LIMIT 100`, params);
+  return rows.map((row) => ({ id: Number(row.id), seasonId: Number(row.season_id), matchday: Number(row.matchday), awardType: row.award_type, subjectName: row.subject_name, teamId: row.team_id === null ? null : Number(row.team_id), teamName: row.team_name, citation: row.citation, createdAt: Number(row.created_at) }));
+}
+async function createAward(input) {
+  await ensureProposedFeatureTables();
+  const result = await query(`INSERT INTO matchday_awards (season_id, matchday, award_type, subject_name, team_id, citation, created_by_email, created_at)
+    VALUES (:seasonId, :matchday, :awardType, :subjectName, :teamId, :citation, :createdByEmail, :now)
+    ON DUPLICATE KEY UPDATE subject_name = VALUES(subject_name), team_id = VALUES(team_id), citation = VALUES(citation), created_by_email = VALUES(created_by_email)`, { ...input, now: Date.now() });
+  return { id: Number(result.insertId || 0) };
+}
+async function deleteAward(id) {
+  await ensureProposedFeatureTables();
+  await query("DELETE FROM matchday_awards WHERE id = :id", { id });
+}
+async function getHeadToHead(teamA, teamB) {
+  await ensureProposedFeatureTables();
+  const rows = await query(`SELECT m.id, m.matchday, m.kickoff_at, m.home_team_id, m.away_team_id, m.home_score, m.away_score,
+    h.name home_team_name, a.name away_team_name FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id
+    WHERE m.status = 'CONFIRMED' AND ((m.home_team_id = :teamA AND m.away_team_id = :teamB) OR (m.home_team_id = :teamB AND m.away_team_id = :teamA)) ORDER BY m.kickoff_at DESC`, { teamA, teamB });
+  const meetings = rows.map((row) => ({ id: Number(row.id), matchday: Number(row.matchday), kickoffAt: Number(row.kickoff_at), homeTeamId: Number(row.home_team_id), awayTeamId: Number(row.away_team_id), homeScore: Number(row.home_score), awayScore: Number(row.away_score), homeTeamName: row.home_team_name, awayTeamName: row.away_team_name }));
+  const aggregate = { teamA: { wins: 0, draws: 0, goals: 0 }, teamB: { wins: 0, draws: 0, goals: 0 } };
+  for (const match of meetings) {
+    const aScore = match.homeTeamId === teamA ? match.homeScore : match.awayScore;
+    const bScore = match.homeTeamId === teamA ? match.awayScore : match.homeScore;
+    aggregate.teamA.goals += aScore;
+    aggregate.teamB.goals += bScore;
+    if (aScore > bScore) aggregate.teamA.wins += 1;
+    else if (bScore > aScore) aggregate.teamB.wins += 1;
+    else {
+      aggregate.teamA.draws += 1;
+      aggregate.teamB.draws += 1;
+    }
+  }
+  return { meetings, aggregate };
+}
+async function getCalendarMatches(userEmail, seasonId) {
+  const params = { userEmail };
+  const filter = Number.isInteger(seasonId) ? "AND m.season_id = :seasonId" : "";
+  if (Number.isInteger(seasonId)) params.seasonId = seasonId;
+  return query(`SELECT m.id, m.matchday, m.kickoff_at, m.status, h.name home_team_name, a.name away_team_name
+    FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id
+    WHERE (EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_id = m.home_team_id AND tm.user_email = :userEmail)
+      OR EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_id = m.away_team_id AND tm.user_email = :userEmail)) ${filter}
+    ORDER BY m.kickoff_at, m.id`, params);
+}
+async function getDiscordSettings() {
+  await ensureProposedFeatureTables();
+  const rows = await query("SELECT id, enabled, label, webhook_url, updated_at FROM discord_settings WHERE id = 1 LIMIT 1");
+  const row = rows[0];
+  return { enabled: Boolean(row?.enabled), label: row?.label || "League Discord", configured: Boolean(row?.webhook_url), updatedAt: row?.updated_at ? Number(row.updated_at) : null };
+}
+async function saveDiscordSettings(input) {
+  await ensureProposedFeatureTables();
+  await query(`INSERT INTO discord_settings (id, webhook_url, enabled, label, updated_by_email, updated_at)
+    VALUES (1, :webhookUrl, :enabled, :label, :email, :now)
+    ON DUPLICATE KEY UPDATE webhook_url = VALUES(webhook_url), enabled = VALUES(enabled), label = VALUES(label), updated_by_email = VALUES(updated_by_email), updated_at = VALUES(updated_at)`, { webhookUrl: input.webhookUrl.trim(), enabled: input.enabled ? 1 : 0, label: input.label.trim().slice(0, 120) || "League Discord", email: input.email, now: Date.now() });
+}
+async function postToDiscord(content, embeds) {
+  await ensureProposedFeatureTables();
+  const rows = await query("SELECT webhook_url, enabled FROM discord_settings WHERE id = 1 LIMIT 1");
+  const row = rows[0];
+  if (!row?.enabled || !row.webhook_url) return { posted: false, reason: "disabled" };
+  const response = await fetch(String(row.webhook_url), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content.slice(0, 2e3), embeds: embeds?.slice(0, 10) }) });
+  if (!response.ok) throw new Error(`Discord webhook returned ${response.status}.`);
+  return { posted: true };
+}
+function toIcsDate(timestamp) {
+  const date = new Date(timestamp);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`;
+}
+function calendarIcs(rows) {
+  const escape = (value) => value.replace(/\\/g, "\\\\").replace(/[,;\n]/g, (match) => `\\${match}`);
+  const events = rows.map((row) => `BEGIN:VEVENT\r
+UID:eleague-match-${row.id}@efootball-leagues-one.vercel.app\r
+DTSTAMP:${toIcsDate(Date.now())}\r
+DTSTART:${toIcsDate(Number(row.kickoff_at))}\r
+DTEND:${toIcsDate(Number(row.kickoff_at) + 7 * 60 * 1e3)}\r
+SUMMARY:${escape(`Matchday ${row.matchday}: ${row.home_team_name} vs ${row.away_team_name}`)}\r
+STATUS:${row.status === "CANCELLED" ? "CANCELLED" : "CONFIRMED"}\r
+END:VEVENT`);
+  return `BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//eLeague Khalpar//Fixtures//EN\r
+CALSCALE:GREGORIAN\r
+${events.join("\r\n")}\r
+END:VCALENDAR\r
+`;
 }
 
 // server/app.ts
@@ -1041,6 +1338,16 @@ async function scorerReviewRows(status) {
 var asyncRoute = (handler) => (request, response, next) => {
   handler(request, response).catch(next);
 };
+async function notifyMatchParticipants(matchId, type, title, body, payload, dedupePrefix) {
+  const members = await query(
+    `SELECT DISTINCT tm.user_email AS email FROM team_memberships tm JOIN matches m ON m.id = :matchId
+      WHERE tm.team_id IN (m.home_team_id, m.away_team_id)`,
+    { matchId }
+  );
+  const admins = await query("SELECT email FROM users WHERE role = 'admin' AND status = 'ACTIVE'");
+  const recipients = Array.from(/* @__PURE__ */ new Set([...members.map((row) => row.email), ...admins.map((row) => row.email)]));
+  await Promise.all(recipients.map((email) => createLeagueNotification({ userEmail: email, type, title, body, payload, dedupeKey: `${dedupePrefix}:${email}` })));
+}
 function requireUser(request, response) {
   const user = request.user;
   if (!user) {
@@ -1488,15 +1795,15 @@ async function buildNextFixtureNotifications() {
   }
   const teamById = new Map(teams.map((team) => [Number(team.id), team]));
   const notifications = [];
-  for (const [teamId, fixture] of nextFixtureByTeam) {
+  nextFixtureByTeam.forEach((fixture, teamId) => {
     const team = teamById.get(teamId);
-    if (!team) continue;
+    if (!team) return;
     const isHome = Number(fixture.home_team_id) === teamId;
     const opponentId = isHome ? Number(fixture.away_team_id) : Number(fixture.home_team_id);
     const opponent = teamById.get(opponentId);
     const table = standingMap.get(teamId);
     const opponentTable = standingMap.get(opponentId);
-    if (!opponent || !table || !opponentTable) continue;
+    if (!opponent || !table || !opponentTable) return;
     const kickoffAt = Number(fixture.kickoff_at);
     notifications.push({
       teamId,
@@ -1516,7 +1823,7 @@ async function buildNextFixtureNotifications() {
       table,
       opponentTable
     });
-  }
+  });
   notifications.sort((a, b) => a.fixture.matchday - b.fixture.matchday || a.teamName.localeCompare(b.teamName));
   const provider = notificationProvider();
   return { seasonId: Number(season.id), seasonName: season.name, from: provider.from, providerConfigured: Boolean(provider.relayUrl && provider.relaySecret), notifications, sent: 0, skipped: notifications.filter((item) => !item.recipients.length).length, failed: [] };
@@ -1617,9 +1924,168 @@ app.post("/api/admin/notifications/next-fixtures", asyncRoute(async (request, re
   response.setHeader("Cache-Control", "no-store, max-age=0");
   response.json(await sendNextFixtureNotifications(user.email));
 }));
+app.get("/api/notifications", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  response.setHeader("Cache-Control", "no-store, max-age=0");
+  response.json(await getNotificationFeed(user.email));
+}));
+app.post("/api/notifications/:notificationId/read", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const id = Number(request.params.notificationId);
+  if (!Number.isInteger(id) || id <= 0) {
+    response.status(400).json({ error: "INVALID_NOTIFICATION_ID", message: "That notification identifier is invalid." });
+    return;
+  }
+  await markNotificationRead(id, user.email);
+  response.json({ ok: true });
+}));
+app.post("/api/notifications/read-all", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  await markAllNotificationsRead(user.email);
+  response.json({ ok: true });
+}));
+app.get("/api/matches/:matchId/details", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const matchId = Number(request.params.matchId);
+  if (!Number.isInteger(matchId) || matchId <= 0) {
+    response.status(400).json({ error: "INVALID_MATCH_ID", message: "That fixture identifier is invalid." });
+    return;
+  }
+  const details = await getMatchDetails(matchId, user.email, user.role === "admin");
+  if (!details) {
+    response.status(404).json({ error: "MATCH_NOT_FOUND", message: "That fixture is not available to your account." });
+    return;
+  }
+  response.json(details);
+}));
+app.post("/api/matches/:matchId/proof", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const matchId = Number(request.params.matchId);
+  const fileName = String(request.body?.fileName || "match-proof.png").trim().slice(0, 180);
+  const mimeType = String(request.body?.mimeType || "").trim().toLowerCase();
+  const dataUrl = String(request.body?.dataUrl || "");
+  const fileSize = Number(request.body?.fileSize || 0);
+  if (!Number.isInteger(matchId) || !/^image\/(png|jpeg|webp)$/.test(mimeType) || !dataUrl.startsWith(`data:${mimeType};base64,`) || !Number.isInteger(fileSize) || fileSize <= 0 || fileSize > 75e4 || dataUrl.length > 1e6) {
+    response.status(400).json({ error: "INVALID_PROOF", message: "Upload a PNG, JPEG, or WebP screenshot smaller than 750 KB." });
+    return;
+  }
+  try {
+    const proof = await addMatchProof({ matchId, userEmail: user.email, fileName, mimeType, fileSize, dataUrl });
+    await notifyMatchParticipants(matchId, "PROOF_SUBMITTED", "New match evidence", `${user.displayName} attached evidence to a fixture awaiting review.`, { matchId, proofId: proof.id }, `proof:${proof.id}`);
+    response.status(201).json(proof);
+  } catch (error) {
+    response.status(403).json({ error: "PROOF_NOT_ALLOWED", message: error instanceof Error ? error.message : "This evidence could not be attached." });
+  }
+}));
+app.post("/api/admin/matches/:matchId/proofs/:proofId/review", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const proofId = Number(request.params.proofId);
+  const status = String(request.body?.status || "").toUpperCase() === "APPROVED" ? "APPROVED" : "REJECTED";
+  await reviewMatchProof(proofId, user.email, status, String(request.body?.note || "").trim());
+  response.json({ ok: true, status });
+}));
+app.get("/api/predictions", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const seasonId = request.query.seasonId === void 0 ? void 0 : Number(request.query.seasonId);
+  response.json(await getPredictionDashboard(user.email, Number.isInteger(seasonId) ? seasonId : void 0));
+}));
+app.post("/api/matches/:matchId/prediction", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const matchId = Number(request.params.matchId);
+  const homeScore = Number(request.body?.homeScore);
+  const awayScore = Number(request.body?.awayScore);
+  if (!Number.isInteger(matchId) || !Number.isInteger(homeScore) || !Number.isInteger(awayScore)) {
+    response.status(400).json({ error: "INVALID_PREDICTION", message: "Enter two whole-number scores." });
+    return;
+  }
+  try {
+    await savePrediction(matchId, user.email, homeScore, awayScore);
+    response.status(201).json({ ok: true });
+  } catch (error) {
+    response.status(409).json({ error: "PREDICTION_NOT_ALLOWED", message: error instanceof Error ? error.message : "This prediction could not be saved." });
+  }
+}));
+app.get("/api/awards", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const seasonId = request.query.seasonId === void 0 ? void 0 : Number(request.query.seasonId);
+  response.json({ awards: await getAwards(Number.isInteger(seasonId) ? seasonId : void 0) });
+}));
+app.post("/api/admin/awards", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const seasonId = Number(request.body?.seasonId);
+  const matchday = Number(request.body?.matchday);
+  const awardType = String(request.body?.awardType || "PLAYER_OF_MATCHDAY").trim().slice(0, 40);
+  const subjectName = String(request.body?.subjectName || "").trim().slice(0, 160);
+  const citation = String(request.body?.citation || "").trim().slice(0, 2e3);
+  const teamId = request.body?.teamId === null || request.body?.teamId === void 0 ? null : Number(request.body.teamId);
+  if (!Number.isInteger(seasonId) || !Number.isInteger(matchday) || !subjectName || !citation) {
+    response.status(400).json({ error: "INVALID_AWARD", message: "Season, matchday, subject, and citation are required." });
+    return;
+  }
+  response.status(201).json(await createAward({ seasonId, matchday, awardType, subjectName, teamId: Number.isInteger(teamId) ? teamId : null, citation, createdByEmail: user.email }));
+}));
+app.delete("/api/admin/awards/:awardId", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await deleteAward(Number(request.params.awardId));
+  response.json({ ok: true });
+}));
+app.get("/api/head-to-head", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const teamA = Number(request.query.teamA);
+  const teamB = Number(request.query.teamB);
+  if (!Number.isInteger(teamA) || !Number.isInteger(teamB) || teamA === teamB) {
+    response.status(400).json({ error: "INVALID_HEAD_TO_HEAD", message: "Choose two different teams." });
+    return;
+  }
+  response.json(await getHeadToHead(teamA, teamB));
+}));
+app.get("/api/calendar.ics", asyncRoute(async (request, response) => {
+  const user = requireUser(request, response);
+  if (!user) return;
+  const seasonId = request.query.seasonId === void 0 ? void 0 : Number(request.query.seasonId);
+  const rows = await getCalendarMatches(user.email, Number.isInteger(seasonId) ? seasonId : void 0);
+  response.setHeader("Content-Type", "text/calendar; charset=utf-8");
+  response.setHeader("Content-Disposition", "attachment; filename=eleague-fixtures.ics");
+  response.send(calendarIcs(rows));
+}));
+app.get("/api/admin/discord-settings", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  response.json(await getDiscordSettings());
+}));
+app.post("/api/admin/discord-settings", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const webhookUrl = String(request.body?.webhookUrl || "").trim();
+  if (webhookUrl && !/^https:\/\/discord(?:app)?\.com\/api\/webhooks\//.test(webhookUrl)) {
+    response.status(400).json({ error: "INVALID_DISCORD_WEBHOOK", message: "Enter a valid Discord webhook URL." });
+    return;
+  }
+  await saveDiscordSettings({ webhookUrl, enabled: Boolean(request.body?.enabled), label: String(request.body?.label || "League Discord"), email: user.email });
+  response.json(await getDiscordSettings());
+}));
+app.post("/api/admin/discord/test", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  const result = await postToDiscord(`eLeague connection check by ${user.displayName}.`);
+  response.json(result);
+}));
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const user = requireUser(request, response);
   if (!user) return;
+  await ensureProposedFeatureTables();
   await ensureNewsTables();
   const seasonRows = await query("SELECT id, name, status, matchday_count, current_matchday FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
   const season = seasonRows[0] || null;
@@ -2374,6 +2840,7 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
       [user.email, String(matchId), homeScore, awayScore, now]
     );
   });
+  await notifyMatchParticipants(matchId, "RESULT_NEEDS_CONFIRMATION", "Result awaiting confirmation", "A home-team result has been submitted and is ready for league review.", { matchId, status: "PENDING" }, `pending-result:${matchId}`);
   response.status(201).json({ matchId, status: "PENDING" });
 }));
 app.post("/api/matches/:matchId/confirm", asyncRoute(async (request, response) => {
@@ -2396,6 +2863,21 @@ app.post("/api/matches/:matchId/confirm", asyncRoute(async (request, response) =
      VALUES (:email, 'CONFIRM_RESULT', 'match', :matchId, JSON_OBJECT(), :now)`,
     { email: user.email, matchId: String(matchId), now }
   );
+  const confirmedRows = await query(
+    `SELECT h.name home_team_name, a.name away_team_name, m.home_score, m.away_score, m.matchday
+       FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id WHERE m.id = :matchId LIMIT 1`,
+    { matchId }
+  );
+  const confirmed = confirmedRows[0];
+  if (confirmed) {
+    await scorePredictions(matchId, Number(confirmed.home_score), Number(confirmed.away_score));
+    await notifyMatchParticipants(matchId, "RESULT_CONFIRMED", "Official result confirmed", `${confirmed.home_team_name} ${confirmed.home_score}\u2013${confirmed.away_score} ${confirmed.away_team_name} is now official.`, { matchId, matchday: confirmed.matchday }, `confirmed-result:${matchId}`);
+    try {
+      await postToDiscord(`Official result \u2014 Matchday ${confirmed.matchday}: ${confirmed.home_team_name} ${confirmed.home_score}\u2013${confirmed.away_score} ${confirmed.away_team_name}`);
+    } catch (error) {
+      console.warn("Discord result post failed", error);
+    }
+  }
   response.json({ matchId, status: "CONFIRMED" });
 }));
 app.get("/api/stats/players", asyncRoute(async (request, response) => {

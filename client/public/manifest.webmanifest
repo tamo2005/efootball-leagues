@@ -1,0 +1,18 @@
+{
+  "name": "eLeague Matchday Manager",
+  "short_name": "eLeague",
+  "description": "Premium matchday management for League'de Khalpar.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a0d14",
+  "theme_color": "#8B1E3F",
+  "lang": "en-IN",
+  "icons": [
+    {
+      "src": "/efootball-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
