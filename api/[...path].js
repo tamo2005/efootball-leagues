@@ -2893,7 +2893,7 @@ app.get("/api/seasons/:seasonId/standings", asyncRoute(async (request, response)
   response.json({ standings: calculateStandings(teams.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code })), matches.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: Number(match.home_score), awayScore: Number(match.away_score) }))) });
 }));
 app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) => {
-  const user = requireAdmin(request, response);
+  const user = requireUser(request, response);
   if (!user) return;
   const matchId = Number(request.params.matchId);
   const homeScore = Number(request.body?.homeScore);
@@ -2926,6 +2926,14 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
   const scheduledDate = Number.isFinite(matchdayAnchorAt) ? leagueDateKey2(matchdayAnchorAt) : "";
   if (!scheduledDate || leagueDateKey2() < scheduledDate) {
     response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${scheduledDate ? formatLeagueDateLabel(scheduledDate) : "its scheduled date"}. Results can be entered from the scheduled league date.` });
+    return;
+  }
+  if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {
+    response.status(403).json({ error: "HOME_TEAM_REQUIRED", message: "Only the home team can enter the match result. The away team can view the fixture and wait for confirmation." });
+    return;
+  }
+  if (match.submitted_by_email && match.submitted_by_email !== user.email && user.role !== "admin") {
+    response.status(409).json({ error: "PENDING_REVIEW", message: "Another player has already submitted this result. Ask an administrator to review it." });
     return;
   }
   const now = Date.now();
