@@ -50,10 +50,10 @@ export function backendLogin(email: string, password: string) {
   });
 }
 
-export function backendRegister(email: string, password: string, displayName: string, teamName: string, shortCode: string) {
-  return request<{ user: BackendUser; team: { id: number; name: string; shortCode: string; status: string } }>("/api/register", {
+export function backendRegister(email: string, password: string, displayName: string) {
+  return request<{ user: BackendUser; team: null; message: string }>("/api/register", {
     method: "POST",
-    body: JSON.stringify({ email, password, displayName, teamName, shortCode }),
+    body: JSON.stringify({ email, password, displayName }),
   });
 }
 
@@ -217,6 +217,39 @@ export function backendGetPlayers() {
 export function backendGetPundits(seasonId?: number) {
   const suffix = seasonId === undefined ? "" : `?seasonId=${encodeURIComponent(String(seasonId))}`;
   return request<{ pundits: BackendPunditEditorial[] }>(`/api/pundit-editorials${suffix}`);
+}
+
+export type EditorialEvidence = {
+  seasonId: number;
+  seasonName: string;
+  status: string;
+  asOfDate: string;
+  confirmedMatches: number;
+  totalMatches: number;
+  standings: Array<Record<string, unknown>>;
+  topScorers: Array<Record<string, unknown>>;
+  teamPerformance: Array<Record<string, unknown>>;
+  latestResults: Array<Record<string, unknown>>;
+  upcomingMatches: Array<Record<string, unknown>>;
+  facts: Record<string, string>;
+  previousSeasons: Array<Record<string, unknown>>;
+};
+
+export type BackendEditorialDraft = {
+  headline: string;
+  dek: string;
+  body: string;
+  bodyParagraphs: string[];
+  facts: string[];
+  factIds: string[];
+  evidence: EditorialEvidence;
+  editorial: ChronicleEditorial;
+  model: string;
+  generatedAt: number;
+};
+
+export function backendGenerateEditorial() {
+  return request<{ draft: BackendEditorialDraft; reviewRequired: boolean; message: string }>("/api/admin/ai/generate-editorial", { method: "POST" });
 }
 
 export function backendCreatePundit(input: { seasonId: number | null; publishDate: string; section: string; headline: string; dek: string; body: string; imageKey: string; facts: string[]; editorial?: ChronicleEditorial }) {

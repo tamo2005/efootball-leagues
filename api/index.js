@@ -582,6 +582,79 @@ async function aiStories(evidence) {
     clearTimeout(timeout);
   }
 }
+function fallbackChronicleEditorial(evidence) {
+  const firstResult = evidence.latestResults[0];
+  const firstFixture = evidence.upcomingMatches[0];
+  const headline = firstResult ? `${firstResult.home} and ${firstResult.away} leave a new Chronicle clue` : `The Chronicle reads the early ${evidence.seasonName} table`;
+  const dek = evidence.facts.leader;
+  const bodyParagraphs = [evidence.facts.confirmed_matches, evidence.facts.leader, evidence.facts.top_scorer, evidence.facts.clean_sheet_leader, evidence.facts.latest_result, evidence.facts.next_match].filter(Boolean);
+  const body = bodyParagraphs.join("\n\n");
+  return {
+    headline: clip(headline, 180),
+    dek: clip(dek, 280),
+    body: clip(body, 5e3),
+    bodyParagraphs,
+    factIds: Object.keys(evidence.facts),
+    facts: Object.values(evidence.facts),
+    editorial: {
+      edition: evidence.seasonName,
+      dateline: `AS OF ${evidence.asOfDate}`,
+      leadStory: {
+        tag: "THE DATA DESK",
+        kicker: "EVIDENCE FILE",
+        headline: clip(headline, 180),
+        subdeck: clip(dek, 280),
+        leadParagraph: clip(bodyParagraphs[0] || "The verified league record is still taking shape.", 1100),
+        bodyParagraphs: bodyParagraphs.slice(0, 6),
+        body: clip(body, 5e3),
+        accentColor: "#8B1E3F"
+      },
+      bentoHighlights: [
+        firstResult ? { type: "RESULT", tag: "LATEST RESULT", title: `${firstResult.home} ${firstResult.score} ${firstResult.away}`, detail: evidence.facts.latest_result, accentColor: "#8B1E3F" } : null,
+        firstFixture ? { type: "FIXTURE", tag: "NEXT UP", title: `${firstFixture.home} vs ${firstFixture.away}`, detail: evidence.facts.next_match, accentColor: "#C7A45A" } : null,
+        evidence.topScorers[0] ? { type: "STAT", tag: "SCORING CHART", title: String(evidence.topScorers[0].name), detail: evidence.facts.top_scorer, accentColor: "#1F4E5F" } : null
+      ].filter(Boolean),
+      quoteOfMatchday: { quote: "The numbers are the story.", attribution: "The Khalpar Chronicle data desk" }
+    }
+  };
+}
+async function generateChronicleEditorial(seasonId) {
+  const evidence = await buildEvidence(seasonId);
+  const generatedAt = Date.now();
+  const fallback = fallbackChronicleEditorial(evidence);
+  const config = modelConfig();
+  if (!config) return { ...fallback, evidence, model: "evidence-only-fallback", generatedAt };
+  const prompt = [
+    "You are the editorial desk for The Khalpar Chronicle, a premium football league publication.",
+    "Use only the supplied EVIDENCE object. It is the single source of truth.",
+    "Do not invent or imply any player, team, goal, score, rivalry, streak, emotion, quote, manager, or statistic that is not explicitly present in EVIDENCE.",
+    "Upcoming fixtures are not results. Do not write as if an upcoming match has been played.",
+    "Select factIds only from the keys in EVIDENCE.facts. If a claim cannot be tied to a factId, omit it.",
+    "Write an engaging but restrained Chronicle lead. Return JSON only in this shape:",
+    '{"headline":"8-180 chars","dek":"12-280 chars","bodyParagraphs":["2-6 grounded paragraphs"],"factIds":["existing fact key"],"editorial":{"edition":"...","dateline":"...","leadStory":{"tag":"...","kicker":"...","headline":"...","subdeck":"...","leadParagraph":"...","bodyParagraphs":["..."],"body":"...","accentColor":"#8B1E3F"},"bentoHighlights":[{"type":"FACT","tag":"...","title":"...","detail":"...","accentColor":"#8B1E3F"}]}}',
+    JSON.stringify({ EVIDENCE: evidence, FACTS: evidence.facts })
+  ].join("\n\n");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12e3);
+  try {
+    const response = await fetch(HUGGING_FACE_CHAT_URL, { method: "POST", headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "Return valid JSON only. Never add facts outside the supplied evidence." }, { role: "user", content: prompt }], temperature: 0.15, max_tokens: 1800 }), signal: controller.signal });
+    const payload = await response.json().catch(() => null);
+    const parsed = typeof payload?.choices?.[0]?.message?.content === "string" ? extractJson(payload.choices[0].message.content) : null;
+    const allowed = new Set(Object.keys(evidence.facts));
+    const factIds = Array.isArray(parsed?.factIds) ? parsed.factIds.map(String).filter((id) => allowed.has(id)) : [];
+    const headline = clip(parsed?.headline, 180);
+    const dek = clip(parsed?.dek, 280);
+    const bodyParagraphs = stringList(parsed?.bodyParagraphs, 6, 900);
+    const body = clip(parsed?.body || bodyParagraphs.join("\n\n"), 5e3);
+    const editorial = normalizeEditorial(parsed?.editorial);
+    if (headline.length < 8 || dek.length < 12 || body.length < 40 || !factIds.length || !editorial) return { ...fallback, evidence, model: `${config.model}:fallback`, generatedAt };
+    return { headline, dek, body, bodyParagraphs: bodyParagraphs.length ? bodyParagraphs : body.split("\n\n").filter(Boolean), facts: factIds.map((id) => evidence.facts[id]), factIds, evidence, editorial, model: config.model, generatedAt };
+  } catch {
+    return { ...fallback, evidence, model: `${config.model}:fallback`, generatedAt };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 function storyData(storyType, evidence) {
   if (storyType === "MATCHDAY_RECAP") return { columns: ["Matchday", "Fixture", "Score"], rows: evidence.latestResults.map((match) => [match.matchday, `${match.home} vs ${match.away}`, match.score]) };
   if (storyType === "UPCOMING_PREVIEW") return { columns: ["Matchday", "Date", "Fixture"], rows: evidence.upcomingMatches.map((match) => [match.matchday, match.date, `${match.home} vs ${match.away}`]) };
@@ -1482,11 +1555,8 @@ var registerRoute = asyncRoute(async (request, response) => {
   const email = String(request.body?.email || "").trim().toLowerCase();
   const displayName = String(request.body?.displayName || "").trim();
   const password = String(request.body?.password || "");
-  const teamName = String(request.body?.teamName || "").trim();
-  const requestedShortCode = String(request.body?.shortCode || "").trim().toUpperCase();
-  const shortCode = (requestedShortCode || teamName.replace(/[^A-Z0-9]/gi, "").slice(0, 3)).slice(0, 12).toUpperCase();
-  if (!email.includes("@") || displayName.length < 2 || password.length < 8 || teamName.length < 2 || shortCode.length < 2) {
-    response.status(400).json({ error: "INVALID_REGISTRATION", message: "Email, display name, password, team name, and a two-character team code are required." });
+  if (!email.includes("@") || displayName.length < 2 || password.length < 8) {
+    response.status(400).json({ error: "INVALID_REGISTRATION", message: "Email, display name, and a password of at least 8 characters are required." });
     return;
   }
   const existingUser = await findUserByEmail(email);
@@ -1494,44 +1564,19 @@ var registerRoute = asyncRoute(async (request, response) => {
     response.status(409).json({ error: "EMAIL_IN_USE", message: "That email is already registered. Sign in or use a different email." });
     return;
   }
-  const existingTeamName = await query("SELECT id FROM teams WHERE LOWER(name) = LOWER(:name) LIMIT 1", { name: teamName });
-  const existingTeamCode = await query("SELECT id FROM teams WHERE UPPER(short_code) = UPPER(:shortCode) LIMIT 1", { shortCode });
-  if (existingTeamName[0] && existingTeamCode[0]) {
-    response.status(409).json({ error: "TEAM_NAME_AND_CODE_IN_USE", message: "That team name and team code already exist. Choose different values." });
-    return;
-  }
-  if (existingTeamName[0]) {
-    response.status(409).json({ error: "TEAM_NAME_IN_USE", message: "That team name already exists. Choose a different name." });
-    return;
-  }
-  if (existingTeamCode[0]) {
-    response.status(409).json({ error: "TEAM_CODE_IN_USE", message: "That team code already exists. Choose a different code." });
-    return;
-  }
   const now = Date.now();
   const passwordHash = await hashPassword(password);
-  let teamId = 0;
   try {
     await withTransaction(async (connection) => {
-      const [teamResult] = await connection.execute(
-        `INSERT INTO teams (name, short_code, manager_name, accent, status, created_by_email, created_at)
-       VALUES (?, ?, ?, '#8B1E3F', 'PENDING', ?, ?)`,
-        [teamName, shortCode, displayName, email, now]
-      );
-      teamId = Number(teamResult.insertId);
       await connection.execute(
         `INSERT INTO users (email, display_name, password_hash, role, status, created_at, updated_at)
-       VALUES (?, ?, ?, 'player', 'ACTIVE', ?, ?)`,
+         VALUES (?, ?, ?, 'player', 'ACTIVE', ?, ?)`,
         [email, displayName, passwordHash, now, now]
       );
       await connection.execute(
-        "INSERT INTO team_memberships (user_email, team_id, membership_role, created_at) VALUES (?, ?, 'CAPTAIN', ?)",
-        [email, teamId, now]
-      );
-      await connection.execute(
         `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
-       VALUES (?, 'PLAYER_REGISTERED', 'team', ?, JSON_OBJECT('email', ?, 'team', ?, 'status', 'PENDING'), ?)`,
-        [email, String(teamId), email, teamName, now]
+         VALUES (?, 'PLAYER_REGISTERED', 'user', ?, JSON_OBJECT('email', ?, 'status', 'ACTIVE', 'teamAssignment', 'ADMIN_REQUIRED'), ?)`,
+        [email, email, email, now]
       );
     });
   } catch (error) {
@@ -1540,7 +1585,7 @@ var registerRoute = asyncRoute(async (request, response) => {
     throw error;
   }
   await createSession(email, response);
-  response.status(201).json({ user: await findUserByEmail(email), team: { id: teamId, name: teamName, shortCode, status: "PENDING" } });
+  response.status(201).json({ user: await findUserByEmail(email), team: null, message: "Account created. A league administrator will assign your team before you can submit results." });
 });
 app.post("/api/auth/register", registerRoute);
 app.post("/api/register", registerRoute);
@@ -1555,6 +1600,18 @@ app.post("/api/news/refresh", asyncRoute(async (request, response) => {
   }
   const result = await refreshLeagueNews(Number(seasonRows[0].id));
   response.json(result);
+}));
+app.post("/api/admin/ai/generate-editorial", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureNewsTables();
+  const seasonRows = await query("SELECT id, name, status FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
+  if (!seasonRows[0]) {
+    response.status(404).json({ error: "SEASON_NOT_FOUND", message: "Create a season before generating Chronicle analysis." });
+    return;
+  }
+  const draft = await generateChronicleEditorial(Number(seasonRows[0].id));
+  response.json({ draft, reviewRequired: true, message: "Draft generated from verified league evidence. Nothing has been published." });
 }));
 app.get("/api/pundit-editorials", asyncRoute(async (request, response) => {
   const requestedSeason = request.query.seasonId === void 0 ? void 0 : Number(request.query.seasonId);
@@ -2696,7 +2753,7 @@ app.post("/api/admin/seasons/:seasonId/start", asyncRoute(async (request, respon
   response.json({ ...result, status: "ACTIVE" });
 }));
 app.post("/api/matches/:matchId/reschedule", asyncRoute(async (request, response) => {
-  const user = requireUser(request, response);
+  const user = requireAdmin(request, response);
   if (!user) return;
   const matchId = Number(request.params.matchId);
   const kickoffAt = Number(request.body?.kickoffAt);
@@ -2713,10 +2770,6 @@ app.post("/api/matches/:matchId/reschedule", asyncRoute(async (request, response
   }
   if (match.status === "CONFIRMED") {
     response.status(409).json({ error: "MATCH_CONFIRMED", message: "Confirmed fixtures cannot be adjusted." });
-    return;
-  }
-  if (user.role !== "admin" && user.teamId !== Number(match.home_team_id) && user.teamId !== Number(match.away_team_id)) {
-    response.status(403).json({ error: "TEAM_ACCESS_REQUIRED", message: "Only an admin or one of the participating teams can adjust this fixture." });
     return;
   }
   const now = Date.now();
@@ -2764,7 +2817,7 @@ app.get("/api/seasons/:seasonId/standings", asyncRoute(async (request, response)
   response.json({ standings: calculateStandings(teams.map((team) => ({ id: Number(team.id), name: team.name, shortCode: team.short_code })), matches.map((match) => ({ homeTeamId: Number(match.home_team_id), awayTeamId: Number(match.away_team_id), homeScore: Number(match.home_score), awayScore: Number(match.away_score) }))) });
 }));
 app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) => {
-  const user = requireUser(request, response);
+  const user = requireAdmin(request, response);
   if (!user) return;
   const matchId = Number(request.params.matchId);
   const homeScore = Number(request.body?.homeScore);
@@ -2797,14 +2850,6 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
   const scheduledDate = Number.isFinite(matchdayAnchorAt) ? leagueDateKey2(matchdayAnchorAt) : "";
   if (!scheduledDate || leagueDateKey2() < scheduledDate) {
     response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${scheduledDate ? formatLeagueDateLabel(scheduledDate) : "its scheduled date"}. Results can be entered from the scheduled league date.` });
-    return;
-  }
-  if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {
-    response.status(403).json({ error: "HOME_TEAM_REQUIRED", message: "Only the home team can enter the match result. The away team can view the fixture and wait for confirmation." });
-    return;
-  }
-  if (match.submitted_by_email && match.submitted_by_email !== user.email && user.role !== "admin") {
-    response.status(409).json({ error: "PENDING_REVIEW", message: "Another player has already submitted this result. Ask an administrator to review it." });
     return;
   }
   const now = Date.now();

@@ -212,7 +212,7 @@ export async function ensureNewsTables() {
   await tablesReady;
 }
 
-async function buildEvidence(seasonId: number): Promise<Evidence> {
+export async function buildEvidence(seasonId: number): Promise<Evidence> {
   const [seasonRows, teamRows, matchRows, goalRows, archiveRows] = await Promise.all([
     query<Array<{ id: number; name: string; status: string }>>("SELECT id, name, status FROM seasons WHERE id = :seasonId LIMIT 1", { seasonId }),
     query<Array<{ id: number; name: string; short_code: string }>>("SELECT id, name, short_code FROM teams WHERE status = 'APPROVED' ORDER BY id", {}),
@@ -311,6 +311,92 @@ async function aiStories(evidence: Evidence): Promise<GeneratedStory[]> {
     }).filter((story): story is GeneratedStory => Boolean(story && story.headline && story.description)) : [];
     return stories.length ? completeStoryCoverage(stories, evidence) : fallbackStories(evidence);
   } catch { return fallbackStories(evidence); } finally { clearTimeout(timeout); }
+}
+
+function fallbackChronicleEditorial(evidence: Evidence) {
+  const firstResult = evidence.latestResults[0];
+  const firstFixture = evidence.upcomingMatches[0];
+  const headline = firstResult ? `${firstResult.home} and ${firstResult.away} leave a new Chronicle clue` : `The Chronicle reads the early ${evidence.seasonName} table`;
+  const dek = evidence.facts.leader;
+  const bodyParagraphs = [evidence.facts.confirmed_matches, evidence.facts.leader, evidence.facts.top_scorer, evidence.facts.clean_sheet_leader, evidence.facts.latest_result, evidence.facts.next_match].filter(Boolean);
+  const body = bodyParagraphs.join("\n\n");
+  return {
+    headline: clip(headline, 180),
+    dek: clip(dek, 280),
+    body: clip(body, 5000),
+    bodyParagraphs,
+    factIds: Object.keys(evidence.facts),
+    facts: Object.values(evidence.facts),
+    editorial: {
+      edition: evidence.seasonName,
+      dateline: `AS OF ${evidence.asOfDate}`,
+      leadStory: {
+        tag: "THE DATA DESK",
+        kicker: "EVIDENCE FILE",
+        headline: clip(headline, 180),
+        subdeck: clip(dek, 280),
+        leadParagraph: clip(bodyParagraphs[0] || "The verified league record is still taking shape.", 1100),
+        bodyParagraphs: bodyParagraphs.slice(0, 6),
+        body: clip(body, 5000),
+        accentColor: "#8B1E3F",
+      },
+      bentoHighlights: [
+        firstResult ? { type: "RESULT", tag: "LATEST RESULT", title: `${firstResult.home} ${firstResult.score} ${firstResult.away}`, detail: evidence.facts.latest_result, accentColor: "#8B1E3F" } : null,
+        firstFixture ? { type: "FIXTURE", tag: "NEXT UP", title: `${firstFixture.home} vs ${firstFixture.away}`, detail: evidence.facts.next_match, accentColor: "#C7A45A" } : null,
+        evidence.topScorers[0] ? { type: "STAT", tag: "SCORING CHART", title: String(evidence.topScorers[0].name), detail: evidence.facts.top_scorer, accentColor: "#1F4E5F" } : null,
+      ].filter(Boolean),
+      quoteOfMatchday: { quote: "The numbers are the story.", attribution: "The Khalpar Chronicle data desk" },
+    },
+  };
+}
+
+export type ChronicleEditorialDraft = {
+  headline: string;
+  dek: string;
+  body: string;
+  bodyParagraphs: string[];
+  facts: string[];
+  factIds: string[];
+  evidence: Evidence;
+  editorial: Record<string, unknown>;
+  model: string;
+  generatedAt: number;
+};
+
+export async function generateChronicleEditorial(seasonId: number): Promise<ChronicleEditorialDraft> {
+  const evidence = await buildEvidence(seasonId);
+  const generatedAt = Date.now();
+  const fallback = fallbackChronicleEditorial(evidence);
+  const config = modelConfig();
+  if (!config) return { ...fallback, evidence, model: "evidence-only-fallback", generatedAt };
+  const prompt = [
+    "You are the editorial desk for The Khalpar Chronicle, a premium football league publication.",
+    "Use only the supplied EVIDENCE object. It is the single source of truth.",
+    "Do not invent or imply any player, team, goal, score, rivalry, streak, emotion, quote, manager, or statistic that is not explicitly present in EVIDENCE.",
+    "Upcoming fixtures are not results. Do not write as if an upcoming match has been played.",
+    "Select factIds only from the keys in EVIDENCE.facts. If a claim cannot be tied to a factId, omit it.",
+    "Write an engaging but restrained Chronicle lead. Return JSON only in this shape:",
+    '{"headline":"8-180 chars","dek":"12-280 chars","bodyParagraphs":["2-6 grounded paragraphs"],"factIds":["existing fact key"],"editorial":{"edition":"...","dateline":"...","leadStory":{"tag":"...","kicker":"...","headline":"...","subdeck":"...","leadParagraph":"...","bodyParagraphs":["..."],"body":"...","accentColor":"#8B1E3F"},"bentoHighlights":[{"type":"FACT","tag":"...","title":"...","detail":"...","accentColor":"#8B1E3F"}]}}',
+    JSON.stringify({ EVIDENCE: evidence, FACTS: evidence.facts }),
+  ].join("\n\n");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(HUGGING_FACE_CHAT_URL, { method: "POST", headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "Return valid JSON only. Never add facts outside the supplied evidence." }, { role: "user", content: prompt }], temperature: 0.15, max_tokens: 1800 }), signal: controller.signal });
+    const payload = await response.json().catch(() => null);
+    const parsed = typeof payload?.choices?.[0]?.message?.content === "string" ? extractJson(payload.choices[0].message.content) : null;
+    const allowed = new Set(Object.keys(evidence.facts));
+    const factIds = Array.isArray(parsed?.factIds) ? parsed.factIds.map(String).filter((id) => allowed.has(id)) : [];
+    const headline = clip(parsed?.headline, 180);
+    const dek = clip(parsed?.dek, 280);
+    const bodyParagraphs = stringList(parsed?.bodyParagraphs, 6, 900);
+    const body = clip(parsed?.body || bodyParagraphs.join("\n\n"), 5000);
+    const editorial = normalizeEditorial(parsed?.editorial);
+    if (headline.length < 8 || dek.length < 12 || body.length < 40 || !factIds.length || !editorial) return { ...fallback, evidence, model: `${config.model}:fallback`, generatedAt };
+    return { headline, dek, body, bodyParagraphs: bodyParagraphs.length ? bodyParagraphs : body.split("\n\n").filter(Boolean), facts: factIds.map((id) => evidence.facts[id]), factIds, evidence, editorial, model: config.model, generatedAt };
+  } catch {
+    return { ...fallback, evidence, model: `${config.model}:fallback`, generatedAt };
+  } finally { clearTimeout(timeout); }
 }
 
 function storyData(storyType: NewsStoryType, evidence: Evidence) {

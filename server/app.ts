@@ -5,7 +5,7 @@ import { OAuth2Client } from "google-auth-library";
 import { clearSession, createSession, findUserByEmail, getCurrentUser, hashPassword, verifyPassword, type CurrentUser } from "./auth";
 import { databaseHealth, isDatabaseConfigured, query, withTransaction } from "./db";
 import { assertScheduleIsCompatible, calculateStandings, generateRoundRobin } from "./league-service";
-import { archiveSeasonSnapshot, createPunditEditorial, deletePunditEditorial, ensureNewsTables, getArchiveRows, getNewsRows, getPunditRows, refreshLeagueNews } from "./news-service";
+import { archiveSeasonSnapshot, createPunditEditorial, deletePunditEditorial, ensureNewsTables, generateChronicleEditorial, getArchiveRows, getNewsRows, getPunditRows, refreshLeagueNews } from "./news-service";
 import { addMatchProof, calendarIcs, createAward, createLeagueNotification, deleteAward, ensureProposedFeatureTables, getAwards, getCalendarMatches, getDiscordSettings, getHeadToHead, getMatchDetails, getNotificationFeed, getPredictionDashboard, markAllNotificationsRead, markNotificationRead, postToDiscord, reviewMatchProof, saveDiscordSettings, savePrediction, scorePredictions } from "./proposed-features";
 
 const app = express();
@@ -590,11 +590,8 @@ const registerRoute = asyncRoute(async (request, response) => {
   const email = String(request.body?.email || "").trim().toLowerCase();
   const displayName = String(request.body?.displayName || "").trim();
   const password = String(request.body?.password || "");
-  const teamName = String(request.body?.teamName || "").trim();
-  const requestedShortCode = String(request.body?.shortCode || "").trim().toUpperCase();
-  const shortCode = (requestedShortCode || teamName.replace(/[^A-Z0-9]/gi, "").slice(0, 3)).slice(0, 12).toUpperCase();
-  if (!email.includes("@") || displayName.length < 2 || password.length < 8 || teamName.length < 2 || shortCode.length < 2) {
-    response.status(400).json({ error: "INVALID_REGISTRATION", message: "Email, display name, password, team name, and a two-character team code are required." });
+  if (!email.includes("@") || displayName.length < 2 || password.length < 8) {
+    response.status(400).json({ error: "INVALID_REGISTRATION", message: "Email, display name, and a password of at least 8 characters are required." });
     return;
   }
   const existingUser = await findUserByEmail(email);
@@ -602,44 +599,19 @@ const registerRoute = asyncRoute(async (request, response) => {
     response.status(409).json({ error: "EMAIL_IN_USE", message: "That email is already registered. Sign in or use a different email." });
     return;
   }
-  const existingTeamName = await query<Array<{ id: number }>>("SELECT id FROM teams WHERE LOWER(name) = LOWER(:name) LIMIT 1", { name: teamName });
-  const existingTeamCode = await query<Array<{ id: number }>>("SELECT id FROM teams WHERE UPPER(short_code) = UPPER(:shortCode) LIMIT 1", { shortCode });
-  if (existingTeamName[0] && existingTeamCode[0]) {
-    response.status(409).json({ error: "TEAM_NAME_AND_CODE_IN_USE", message: "That team name and team code already exist. Choose different values." });
-    return;
-  }
-  if (existingTeamName[0]) {
-    response.status(409).json({ error: "TEAM_NAME_IN_USE", message: "That team name already exists. Choose a different name." });
-    return;
-  }
-  if (existingTeamCode[0]) {
-    response.status(409).json({ error: "TEAM_CODE_IN_USE", message: "That team code already exists. Choose a different code." });
-    return;
-  }
   const now = Date.now();
   const passwordHash = await hashPassword(password);
-  let teamId = 0;
   try {
     await withTransaction(async (connection) => {
-      const [teamResult] = await connection.execute(
-      `INSERT INTO teams (name, short_code, manager_name, accent, status, created_by_email, created_at)
-       VALUES (?, ?, ?, '#8B1E3F', 'PENDING', ?, ?)`,
-      [teamName, shortCode, displayName, email, now],
-    );
-    teamId = Number((teamResult as { insertId: number }).insertId);
-    await connection.execute(
-      `INSERT INTO users (email, display_name, password_hash, role, status, created_at, updated_at)
-       VALUES (?, ?, ?, 'player', 'ACTIVE', ?, ?)`,
-      [email, displayName, passwordHash, now, now],
-    );
-    await connection.execute(
-      "INSERT INTO team_memberships (user_email, team_id, membership_role, created_at) VALUES (?, ?, 'CAPTAIN', ?)",
-      [email, teamId, now],
-    );
-    await connection.execute(
-      `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
-       VALUES (?, 'PLAYER_REGISTERED', 'team', ?, JSON_OBJECT('email', ?, 'team', ?, 'status', 'PENDING'), ?)`,
-      [email, String(teamId), email, teamName, now],
+      await connection.execute(
+        `INSERT INTO users (email, display_name, password_hash, role, status, created_at, updated_at)
+         VALUES (?, ?, ?, 'player', 'ACTIVE', ?, ?)`,
+        [email, displayName, passwordHash, now, now],
+      );
+      await connection.execute(
+        `INSERT INTO audit_events (actor_email, event_type, entity_type, entity_id, payload, created_at)
+         VALUES (?, 'PLAYER_REGISTERED', 'user', ?, JSON_OBJECT('email', ?, 'status', 'ACTIVE', 'teamAssignment', 'ADMIN_REQUIRED'), ?)`,
+        [email, email, email, now],
       );
     });
   } catch (error) {
@@ -648,7 +620,7 @@ const registerRoute = asyncRoute(async (request, response) => {
     throw error;
   }
   await createSession(email, response);
-  response.status(201).json({ user: await findUserByEmail(email), team: { id: teamId, name: teamName, shortCode, status: "PENDING" } });
+  response.status(201).json({ user: await findUserByEmail(email), team: null, message: "Account created. A league administrator will assign your team before you can submit results." });
 });
 app.post("/api/auth/register", registerRoute);
 app.post("/api/register", registerRoute);
@@ -664,6 +636,19 @@ app.post("/api/news/refresh", asyncRoute(async (request, response) => {
   }
   const result = await refreshLeagueNews(Number(seasonRows[0].id));
   response.json(result);
+}));
+
+app.post("/api/admin/ai/generate-editorial", asyncRoute(async (request, response) => {
+  const user = requireAdmin(request, response);
+  if (!user) return;
+  await ensureNewsTables();
+  const seasonRows = await query<Array<{ id: number; name: string; status: string }>>("SELECT id, name, status FROM seasons ORDER BY CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END, id DESC LIMIT 1");
+  if (!seasonRows[0]) {
+    response.status(404).json({ error: "SEASON_NOT_FOUND", message: "Create a season before generating Chronicle analysis." });
+    return;
+  }
+  const draft = await generateChronicleEditorial(Number(seasonRows[0].id));
+  response.json({ draft, reviewRequired: true, message: "Draft generated from verified league evidence. Nothing has been published." });
 }));
 
 app.get("/api/pundit-editorials", asyncRoute(async (request, response) => {
@@ -1866,7 +1851,7 @@ app.post("/api/admin/seasons/:seasonId/start", asyncRoute(async (request, respon
 }));
 
 app.post("/api/matches/:matchId/reschedule", asyncRoute(async (request, response) => {
-  const user = requireUser(request, response);
+  const user = requireAdmin(request, response);
   if (!user) return;
   const matchId = Number(request.params.matchId);
   const kickoffAt = Number(request.body?.kickoffAt);
@@ -1883,10 +1868,6 @@ app.post("/api/matches/:matchId/reschedule", asyncRoute(async (request, response
   }
   if (match.status === "CONFIRMED") {
     response.status(409).json({ error: "MATCH_CONFIRMED", message: "Confirmed fixtures cannot be adjusted." });
-    return;
-  }
-  if (user.role !== "admin" && user.teamId !== Number(match.home_team_id) && user.teamId !== Number(match.away_team_id)) {
-    response.status(403).json({ error: "TEAM_ACCESS_REQUIRED", message: "Only an admin or one of the participating teams can adjust this fixture." });
     return;
   }
   const now = Date.now();
@@ -1937,7 +1918,7 @@ app.get("/api/seasons/:seasonId/standings", asyncRoute(async (request, response)
 }));
 
 app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) => {
-  const user = requireUser(request, response);
+  const user = requireAdmin(request, response);
   if (!user) return;
   const matchId = Number(request.params.matchId);
   const homeScore = Number(request.body?.homeScore);
@@ -1970,14 +1951,6 @@ app.post("/api/matches/:matchId/result", asyncRoute(async (request, response) =>
   const scheduledDate = Number.isFinite(matchdayAnchorAt) ? leagueDateKey(matchdayAnchorAt) : "";
   if (!scheduledDate || leagueDateKey() < scheduledDate) {
     response.status(425).json({ error: "MATCH_NOT_OPEN", message: `This fixture opens on ${scheduledDate ? formatLeagueDateLabel(scheduledDate) : "its scheduled date"}. Results can be entered from the scheduled league date.` });
-    return;
-  }
-  if (user.role !== "admin" && user.teamId !== Number(match.home_team_id)) {
-    response.status(403).json({ error: "HOME_TEAM_REQUIRED", message: "Only the home team can enter the match result. The away team can view the fixture and wait for confirmation." });
-    return;
-  }
-  if (match.submitted_by_email && match.submitted_by_email !== user.email && user.role !== "admin") {
-    response.status(409).json({ error: "PENDING_REVIEW", message: "Another player has already submitted this result. Ask an administrator to review it." });
     return;
   }
   const now = Date.now();
