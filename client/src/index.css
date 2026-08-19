@@ -2818,6 +2818,64 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline-color:
 .performance-chart .recharts-cartesian-axis-tick_text { fill: #8b7a80; font-family: "Space Mono", "Courier New", monospace; font-size: 9px; }
 .performance-chart .recharts-cartesian-grid line { stroke: #eadfd5; }
 
+/* League Signals: Records from the Pitch */
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  margin-top: 16px;
+}
+.signal-card {
+  padding: 20px;
+  border: 1px solid #e6dbd0;
+  border-radius: 14px;
+  background: #fffaf4;
+}
+.signal-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eee4d8;
+}
+.signal-badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: "Space Mono", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .05em;
+}
+.signal-badge-gold { background: #fdf2d7; color: #8b6e2a; }
+.signal-badge-blue { background: #e7f3ff; color: #2a5d8b; }
+.signal-card-heading small { color: #8b7a80; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
+.signal-list { display: flex; flex-direction: column; gap: 12px; }
+.signal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+.signal-rank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #f3efe8;
+  color: #8b7a80;
+  font-family: "Space Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+.signal-rank.leader { background: #8b1e3f; color: #fff; }
+.signal-row div { flex: 1; min-width: 0; }
+.signal-row strong { display: block; color: #1a0d14; font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.signal-row small { color: #8b7a80; font-size: 11px; }
+.signal-row b { color: #8b1e3f; font-family: "Space Grotesk", sans-serif; font-size: 18px; font-weight: 800; }
+
 /* Motion polish */
 .panel, .view-panel, .metric-card, .team-card, .match-row, .signal-card, .performance-record-card, .today-fixture {
   transition: background-color .22s ease, border-color .22s ease, box-shadow .22s ease, transform .22s ease;
@@ -2874,6 +2932,17 @@ html.dark { background: #1a0d14; color: #f3efe8; }
 .dark .performance-chart-wrap { background: #1e1020; border-color: rgba(199, 164, 90, .2); }
 .dark .performance-chart .recharts-cartesian-axis-tick_text { fill: #d0bec5; }
 .dark .performance-chart .recharts-cartesian-grid line { stroke: rgba(199, 164, 90, .2); }
+
+.dark .signal-card { background: #261525; border-color: rgba(199, 164, 90, .2); }
+.dark .signal-card-heading { border-bottom-color: rgba(199, 164, 90, .15); }
+.dark .signal-badge-gold { background: rgba(199, 164, 90, .15); color: #d9b96a; }
+.dark .signal-badge-blue { background: rgba(121, 185, 242, .15); color: #79b9f2; }
+.dark .signal-card-heading small { color: #a28f94; }
+.dark .signal-rank { background: #342036; color: #a28f94; }
+.dark .signal-rank.leader { background: #8b1e3f; color: #fff; }
+.dark .signal-row strong { color: #f3efe8; }
+.dark .signal-row small { color: #a28f94; }
+.dark .signal-row b { color: #d9b96a; }
 .dark .database-hero { background: linear-gradient(115deg, #32192e, #492548); }
 .dark .database-card .user-directory-row, .dark .record-counts, .dark .rule-row { border-color: rgba(199, 164, 90, .17); }
 .dark .role-badge, .dark .permission-note, .dark .rule-status { background: #342036; border-color: rgba(199, 164, 90, .2); color: #d9c7ce; }
