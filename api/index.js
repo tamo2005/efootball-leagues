@@ -635,9 +635,9 @@ async function generateChronicleEditorial(seasonId) {
     JSON.stringify({ EVIDENCE: evidence, FACTS: evidence.facts })
   ].join("\n\n");
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12e3);
+  const timeout = setTimeout(() => controller.abort(), 4500);
   try {
-    const response = await fetch(HUGGING_FACE_CHAT_URL, { method: "POST", headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "Return valid JSON only. Never add facts outside the supplied evidence." }, { role: "user", content: prompt }], temperature: 0.15, max_tokens: 1800 }), signal: controller.signal });
+    const response = await fetch(HUGGING_FACE_CHAT_URL, { method: "POST", headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: "Return valid JSON only. Never add facts outside the supplied evidence." }, { role: "user", content: prompt }], temperature: 0.15, max_tokens: 1e3 }), signal: controller.signal });
     const payload = await response.json().catch(() => null);
     const parsed = typeof payload?.choices?.[0]?.message?.content === "string" ? extractJson(payload.choices[0].message.content) : null;
     const allowed = new Set(Object.keys(evidence.facts));
