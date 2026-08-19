@@ -170,6 +170,24 @@ export type ChronicleQuote = {
   attribution?: string;
 };
 
+export type ChroniclePrediction = {
+  matchday: number;
+  date: string;
+  fixture: string;
+  pick: "HOME WIN" | "DRAW" | "AWAY WIN";
+  confidence: "LOW" | "MEDIUM" | "HIGH";
+  rationale: string;
+  factIds?: string[];
+};
+
+export type ChronicleUpcomingFixtureFact = {
+  matchday: number;
+  date: string;
+  fixture: string;
+  facts: string[];
+  factIds?: string[];
+};
+
 export type ChronicleEditorial = {
   edition?: string;
   dateline?: string;
@@ -179,6 +197,8 @@ export type ChronicleEditorial = {
   managerPressure?: ChronicleManagerPressure[];
   awards?: ChronicleAward[];
   quoteOfMatchday?: ChronicleQuote;
+  predictions?: ChroniclePrediction[];
+  upcomingFixtureFacts?: ChronicleUpcomingFixtureFact[];
   touchlineDispatches?: ChronicleTouchlineDispatch[];
 };
 

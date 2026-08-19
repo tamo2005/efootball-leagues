@@ -231,6 +231,22 @@ export type EditorialEvidence = {
   teamPerformance: Array<Record<string, unknown>>;
   latestResults: Array<Record<string, unknown>>;
   upcomingMatches: Array<Record<string, unknown>>;
+  upcomingFixtureInsights: Array<{
+    matchday: number;
+    date: string;
+    fixture: string;
+    facts: string[];
+    factIds: string[];
+    kickoffAt: number;
+    prediction: {
+      matchday: number;
+      date: string;
+      fixture: string;
+      pick: "HOME WIN" | "DRAW" | "AWAY WIN";
+      confidence: "LOW" | "MEDIUM" | "HIGH";
+      rationale: string;
+    };
+  }>;
   facts: Record<string, string>;
   previousSeasons: Array<Record<string, unknown>>;
 };
@@ -242,6 +258,8 @@ export type BackendEditorialDraft = {
   bodyParagraphs: string[];
   facts: string[];
   factIds: string[];
+  predictions: ChroniclePrediction[];
+  upcomingFixtureFacts: ChronicleUpcomingFixtureFact[];
   evidence: EditorialEvidence;
   editorial: ChronicleEditorial;
   model: string;
@@ -294,7 +312,7 @@ export function backendCreateSeason(name: string) {
 }
 
 import { matchDateKey } from "./league-db";
-import type { ChronicleAward, ChronicleBentoHighlight, ChronicleCrisisWatch, ChronicleEditorial, ChronicleLeadStory, ChronicleManagerPressure, ChronicleQuote, ChronicleTouchlineDispatch, Goal, LeagueDatabase, LeagueNewsStory, Match, PunditEditorial, SeasonArchive } from "./league-db";
+import type { ChronicleAward, ChronicleBentoHighlight, ChronicleCrisisWatch, ChronicleEditorial, ChronicleLeadStory, ChronicleManagerPressure, ChroniclePrediction, ChronicleQuote, ChronicleTouchlineDispatch, ChronicleUpcomingFixtureFact, Goal, LeagueDatabase, LeagueNewsStory, Match, PunditEditorial, SeasonArchive } from "./league-db";
 
 function jsonObject(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;

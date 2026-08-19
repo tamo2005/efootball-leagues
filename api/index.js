@@ -379,6 +379,32 @@ function normalizeEditorial(value) {
     if (!row) return null;
     return { tag: clip(row.tag || "TOUCHLINE DISPATCH", 80), title: clip(row.title || "Dispatch", 180), blurb: clip(row.blurb || row.description || "", 500) };
   }).filter(Boolean);
+  const predictions = (Array.isArray(raw.predictions) ? raw.predictions : []).slice(0, 6).map((item) => {
+    const row = parseObject(item);
+    if (!row) return null;
+    const pick = String(row.pick || "DRAW").toUpperCase();
+    const confidence = String(row.confidence || "LOW").toUpperCase();
+    return {
+      matchday: Math.max(0, safeNumber(row.matchday)),
+      date: clip(row.date || "\u2014", 20),
+      fixture: clip(row.fixture || "Upcoming fixture", 180),
+      pick: ["HOME WIN", "DRAW", "AWAY WIN"].includes(pick) ? pick : "DRAW",
+      confidence: ["LOW", "MEDIUM", "HIGH"].includes(confidence) ? confidence : "LOW",
+      rationale: clip(row.rationale || "The verified table provides only a cautious signal.", 360),
+      factIds: stringList(row.factIds, 8, 100)
+    };
+  }).filter(Boolean);
+  const upcomingFixtureFacts = (Array.isArray(raw.upcomingFixtureFacts) ? raw.upcomingFixtureFacts : []).slice(0, 6).map((item) => {
+    const row = parseObject(item);
+    if (!row) return null;
+    return {
+      matchday: Math.max(0, safeNumber(row.matchday)),
+      date: clip(row.date || "\u2014", 20),
+      fixture: clip(row.fixture || "Upcoming fixture", 180),
+      facts: stringList(row.facts, 6, 360),
+      factIds: stringList(row.factIds, 8, 100)
+    };
+  }).filter(Boolean);
   return {
     edition: raw.edition ? clip(raw.edition, 120) : void 0,
     dateline: raw.dateline ? clip(raw.dateline, 140) : void 0,
@@ -404,6 +430,8 @@ function normalizeEditorial(value) {
     } : void 0,
     managerPressure,
     awards,
+    predictions,
+    upcomingFixtureFacts,
     quoteOfMatchday: quoteOfMatchday?.quote ? quoteOfMatchday : void 0,
     touchlineDispatches
   };
@@ -471,6 +499,42 @@ async function ensureNewsTables() {
   }
   await tablesReady;
 }
+function buildUpcomingFixtureInsights(upcomingMatches, standings, teamPerformance) {
+  const performanceByName = new Map(teamPerformance.map((row) => [String(row.teamName), row]));
+  return upcomingMatches.map((match, index) => {
+    const home = String(match.home || "Home team");
+    const away = String(match.away || "Away team");
+    const homeRow = standings.find((row) => String(row.name) === home);
+    const awayRow = standings.find((row) => String(row.name) === away);
+    const homePerformance = performanceByName.get(home);
+    const awayPerformance = performanceByName.get(away);
+    const homePoints = numeric(homeRow?.points);
+    const awayPoints = numeric(awayRow?.points);
+    const homeGoalDifference = numeric(homeRow?.goalDifference);
+    const awayGoalDifference = numeric(awayRow?.goalDifference);
+    const pointGap = Math.abs(homePoints - awayPoints);
+    const goalDifferenceGap = Math.abs(homeGoalDifference - awayGoalDifference);
+    const pick = homePoints === awayPoints && homeGoalDifference === awayGoalDifference ? "DRAW" : homePoints > awayPoints || homePoints === awayPoints && homeGoalDifference > awayGoalDifference ? "HOME WIN" : "AWAY WIN";
+    const confidence = !homeRow || !awayRow || numeric(homeRow.played) === 0 && numeric(awayRow.played) === 0 ? "LOW" : pointGap >= 4 || goalDifferenceGap >= 6 ? "HIGH" : pointGap >= 2 || goalDifferenceGap >= 3 ? "MEDIUM" : "LOW";
+    const homeSummary = homeRow ? `${home} have ${homePoints} points from ${numeric(homeRow.played)} confirmed matches, with a ${homeGoalDifference >= 0 ? "+" : ""}${homeGoalDifference} goal difference.` : `${home} have no confirmed standings record yet.`;
+    const awaySummary = awayRow ? `${away} have ${awayPoints} points from ${numeric(awayRow.played)} confirmed matches, with a ${awayGoalDifference >= 0 ? "+" : ""}${awayGoalDifference} goal difference.` : `${away} have no confirmed standings record yet.`;
+    const homeAttack = homePerformance ? `${home} have scored ${homePerformance.goalsFor} and conceded ${homePerformance.goalsAgainst} in confirmed matches.` : `${home} have no confirmed performance total yet.`;
+    const awayAttack = awayPerformance ? `${away} have scored ${awayPerformance.goalsFor} and conceded ${awayPerformance.goalsAgainst} in confirmed matches.` : `${away} have no confirmed performance total yet.`;
+    const factIds = [`upcoming_${index + 1}_home_table`, `upcoming_${index + 1}_away_table`, `upcoming_${index + 1}_home_attack`, `upcoming_${index + 1}_away_attack`];
+    const fixture = `${home} vs ${away}`;
+    const facts = [homeSummary, awaySummary, homeAttack, awayAttack];
+    const rationale = homePoints === awayPoints && homeGoalDifference === awayGoalDifference ? "The confirmed table is level on points and goal difference, so the data supports a cautious draw call." : `${pick === "HOME WIN" ? home : away} hold the stronger confirmed table profile on points and goal difference.`;
+    return {
+      matchday: numeric(match.matchday),
+      date: String(match.date || "\u2014"),
+      fixture,
+      facts,
+      factIds,
+      kickoffAt: numeric(match.kickoffAt),
+      prediction: { matchday: numeric(match.matchday), date: String(match.date || "\u2014"), fixture, pick, confidence, rationale }
+    };
+  });
+}
 async function buildEvidence(seasonId) {
   const [seasonRows, teamRows, matchRows, goalRows, archiveRows] = await Promise.all([
     query("SELECT id, name, status FROM seasons WHERE id = :seasonId LIMIT 1", { seasonId }),
@@ -510,6 +574,8 @@ async function buildEvidence(seasonId) {
   const topScorers = Array.from(scorerMap.values()).sort((a, b) => numeric(b.goals) - numeric(a.goals)).slice(0, 8);
   const latestResults = confirmedRows.slice(-6).reverse().map((match) => ({ matchday: Number(match.matchday), date: leagueDateKey(Number(match.kickoff_at)), home: teamById.get(Number(match.home_team_id))?.name, away: teamById.get(Number(match.away_team_id))?.name, score: `${numeric(match.home_score)}-${numeric(match.away_score)}` }));
   const upcomingMatches = matchRows.filter((match) => match.status === "SCHEDULED" || match.status === "POSTPONED").slice(0, 6).map((match) => ({ matchday: Number(match.matchday), date: leagueDateKey(Number(match.kickoff_at)), kickoffAt: Number(match.kickoff_at), home: teamById.get(Number(match.home_team_id))?.name, away: teamById.get(Number(match.away_team_id))?.name }));
+  const upcomingFixtureInsights = buildUpcomingFixtureInsights(upcomingMatches, standings, teamPerformance);
+  const upcomingFixtureFacts = Object.fromEntries(upcomingFixtureInsights.flatMap((insight) => insight.factIds.map((factId, index) => [factId, insight.facts[index]])));
   const leader = standings[0];
   const topScorer = topScorers[0];
   const cleanSheetLeader = [...teamPerformance].sort((a, b) => numeric(b.cleanSheets) - numeric(a.cleanSheets))[0];
@@ -523,9 +589,10 @@ async function buildEvidence(seasonId) {
       const result = homeScore === awayScore ? `${latestResults[0].home} drew ${latestResults[0].away}` : homeScore > awayScore ? `${latestResults[0].home} beat ${latestResults[0].away}` : `${latestResults[0].away} beat ${latestResults[0].home}`;
       return `${result} in the latest recorded scoreline ${latestResults[0].score}.`;
     })() : "There is no confirmed result to recap yet.",
-    next_match: upcomingMatches[0] ? `The next listed fixture is ${upcomingMatches[0].home} versus ${upcomingMatches[0].away} on ${upcomingMatches[0].date}.` : "There is no upcoming fixture currently listed."
+    next_match: upcomingMatches[0] ? `The next listed fixture is ${upcomingMatches[0].home} versus ${upcomingMatches[0].away} on ${upcomingMatches[0].date}.` : "There is no upcoming fixture currently listed.",
+    ...upcomingFixtureFacts
   };
-  return { seasonId, seasonName: season.name, status: season.status, asOfDate: leagueDateKey(), confirmedMatches: confirmedRows.length, totalMatches: matchRows.length, standings: standings.slice(0, 8), topScorers, teamPerformance, latestResults, upcomingMatches, facts, previousSeasons: archiveRows.map((archive) => ({ seasonName: archive.season_name, completedAt: archive.completed_at, standings: parseObject(archive.standings_json) || archive.standings_json })) };
+  return { seasonId, seasonName: season.name, status: season.status, asOfDate: leagueDateKey(), confirmedMatches: confirmedRows.length, totalMatches: matchRows.length, standings: standings.slice(0, 8), topScorers, teamPerformance, latestResults, upcomingMatches, upcomingFixtureInsights, facts, previousSeasons: archiveRows.map((archive) => ({ seasonName: archive.season_name, completedAt: archive.completed_at, standings: parseObject(archive.standings_json) || archive.standings_json })) };
 }
 function fallbackStories(evidence) {
   const stories = [];
@@ -585,6 +652,8 @@ async function aiStories(evidence) {
 function fallbackChronicleEditorial(evidence) {
   const firstResult = evidence.latestResults[0];
   const firstFixture = evidence.upcomingMatches[0];
+  const predictions = evidence.upcomingFixtureInsights.map((insight) => ({ ...insight.prediction, factIds: insight.factIds }));
+  const upcomingFixtureFacts = evidence.upcomingFixtureInsights.map(({ matchday, date, fixture, facts, factIds }) => ({ matchday, date, fixture, facts, factIds }));
   const headline = firstResult ? `${firstResult.home} and ${firstResult.away} leave a new Chronicle clue` : `The Chronicle reads the early ${evidence.seasonName} table`;
   const dek = evidence.facts.leader;
   const bodyParagraphs = [evidence.facts.confirmed_matches, evidence.facts.leader, evidence.facts.top_scorer, evidence.facts.clean_sheet_leader, evidence.facts.latest_result, evidence.facts.next_match].filter(Boolean);
@@ -614,8 +683,12 @@ function fallbackChronicleEditorial(evidence) {
         firstFixture ? { type: "FIXTURE", tag: "NEXT UP", title: `${firstFixture.home} vs ${firstFixture.away}`, detail: evidence.facts.next_match, accentColor: "#C7A45A" } : null,
         evidence.topScorers[0] ? { type: "STAT", tag: "SCORING CHART", title: String(evidence.topScorers[0].name), detail: evidence.facts.top_scorer, accentColor: "#1F4E5F" } : null
       ].filter(Boolean),
+      predictions,
+      upcomingFixtureFacts,
       quoteOfMatchday: { quote: "The numbers are the story.", attribution: "The Khalpar Chronicle data desk" }
-    }
+    },
+    predictions,
+    upcomingFixtureFacts
   };
 }
 async function generateChronicleEditorial(seasonId) {
@@ -630,8 +703,10 @@ async function generateChronicleEditorial(seasonId) {
     "Do not invent or imply any player, team, goal, score, rivalry, streak, emotion, quote, manager, or statistic that is not explicitly present in EVIDENCE.",
     "Upcoming fixtures are not results. Do not write as if an upcoming match has been played.",
     "Select factIds only from the keys in EVIDENCE.facts. If a claim cannot be tied to a factId, omit it.",
+    "For every upcoming fixture, provide a cautious prediction using only the confirmed table and performance totals. Use exactly HOME WIN, DRAW, or AWAY WIN, and LOW, MEDIUM, or HIGH confidence. Label predictions as predictions, never as results.",
+    "For every upcoming fixture, provide 2-4 verified facts with factIds. Do not invent form, injuries, rivalries, likely scorers, or historical meetings.",
     "Write an engaging but restrained Chronicle lead. Return JSON only in this shape:",
-    '{"headline":"8-180 chars","dek":"12-280 chars","bodyParagraphs":["2-6 grounded paragraphs"],"factIds":["existing fact key"],"editorial":{"edition":"...","dateline":"...","leadStory":{"tag":"...","kicker":"...","headline":"...","subdeck":"...","leadParagraph":"...","bodyParagraphs":["..."],"body":"...","accentColor":"#8B1E3F"},"bentoHighlights":[{"type":"FACT","tag":"...","title":"...","detail":"...","accentColor":"#8B1E3F"}]}}',
+    '{"headline":"8-180 chars","dek":"12-280 chars","bodyParagraphs":["2-6 grounded paragraphs"],"factIds":["existing fact key"],"predictions":[{"matchday":1,"date":"YYYY-MM-DD","fixture":"Home vs Away","pick":"HOME WIN|DRAW|AWAY WIN","confidence":"LOW|MEDIUM|HIGH","rationale":"...","factIds":["upcoming_1_home_table"]}],"upcomingFixtureFacts":[{"matchday":1,"date":"YYYY-MM-DD","fixture":"Home vs Away","facts":["..."],"factIds":["upcoming_1_home_table"]}],"editorial":{"edition":"...","dateline":"...","leadStory":{"tag":"...","kicker":"...","headline":"...","subdeck":"...","leadParagraph":"...","bodyParagraphs":["..."],"body":"...","accentColor":"#8B1E3F"},"bentoHighlights":[{"type":"FACT","tag":"...","title":"...","detail":"...","accentColor":"#8B1E3F"}],"predictions":[],"upcomingFixtureFacts":[]}}',
     JSON.stringify({ EVIDENCE: evidence, FACTS: evidence.facts })
   ].join("\n\n");
   const controller = new AbortController();
@@ -647,8 +722,9 @@ async function generateChronicleEditorial(seasonId) {
     const bodyParagraphs = stringList(parsed?.bodyParagraphs, 6, 900);
     const body = clip(parsed?.body || bodyParagraphs.join("\n\n"), 5e3);
     const editorial = normalizeEditorial(parsed?.editorial);
-    if (headline.length < 8 || dek.length < 12 || body.length < 40 || !factIds.length || !editorial) return { ...fallback, evidence, model: `${config.model}:fallback`, generatedAt };
-    return { headline, dek, body, bodyParagraphs: bodyParagraphs.length ? bodyParagraphs : body.split("\n\n").filter(Boolean), facts: factIds.map((id) => evidence.facts[id]), factIds, evidence, editorial, model: config.model, generatedAt };
+    const groundedEditorial = editorial ? { ...editorial, predictions: fallback.predictions, upcomingFixtureFacts: fallback.upcomingFixtureFacts } : null;
+    if (headline.length < 8 || dek.length < 12 || body.length < 40 || !factIds.length || !groundedEditorial) return { ...fallback, evidence, model: `${config.model}:fallback`, generatedAt };
+    return { headline, dek, body, bodyParagraphs: bodyParagraphs.length ? bodyParagraphs : body.split("\n\n").filter(Boolean), facts: factIds.map((id) => evidence.facts[id]), factIds, predictions: fallback.predictions, upcomingFixtureFacts: fallback.upcomingFixtureFacts, evidence, editorial: groundedEditorial, model: config.model, generatedAt };
   } catch {
     return { ...fallback, evidence, model: `${config.model}:fallback`, generatedAt };
   } finally {
