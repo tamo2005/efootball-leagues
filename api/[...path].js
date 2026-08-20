@@ -327,7 +327,14 @@ function normalizeEditorial(value) {
   const bentoHighlights = (Array.isArray(raw.bentoHighlights) ? raw.bentoHighlights : []).slice(0, 6).map((item) => {
     const row = parseObject(item);
     if (!row) return null;
-    const scoreline = parseObject(row.scoreline);
+    let scoreline = parseObject(row.scoreline);
+    if (!scoreline && typeof row.score === "string" && typeof row.teams === "string") {
+      const scoreMatch = row.score.match(/(\d+)\s*[—-]\s*(\d+)/);
+      const teamMatch = row.teams.split(/\s+vs\s+/i).map((team) => team.trim()).filter(Boolean);
+      if (scoreMatch && teamMatch.length === 2) {
+        scoreline = { home: teamMatch[0], homeScore: Number(scoreMatch[1]), awayScore: Number(scoreMatch[2]), away: teamMatch[1] };
+      }
+    }
     return {
       type: clip(row.type || row.badge || "FACT", 40),
       tag: clip(row.tag || row.badge || "THE NUMBERS", 80),
@@ -374,10 +381,11 @@ function normalizeEditorial(value) {
   }).filter(Boolean);
   const quoteRaw = parseObject(raw.quoteOfMatchday);
   const quoteOfMatchday = typeof raw.quoteOfMatchday === "string" ? { quote: clip(raw.quoteOfMatchday, 420) } : quoteRaw ? { quote: clip(quoteRaw.quote || quoteRaw.text || "", 420), attribution: quoteRaw.attribution ? clip(quoteRaw.attribution, 160) : void 0 } : void 0;
-  const touchlineDispatches = (Array.isArray(raw.touchlineDispatches) ? raw.touchlineDispatches : []).slice(0, 6).map((item) => {
+  const touchlineItems = Array.isArray(raw.touchlineDispatches) ? raw.touchlineDispatches : Array.isArray(raw.touchlineWires) ? raw.touchlineWires : [];
+  const touchlineDispatches = touchlineItems.slice(0, 6).map((item) => {
     const row = parseObject(item);
     if (!row) return null;
-    return { tag: clip(row.tag || "TOUCHLINE DISPATCH", 80), title: clip(row.title || "Dispatch", 180), blurb: clip(row.blurb || row.description || "", 500) };
+    return { tag: clip(row.tag || "TOUCHLINE DISPATCH", 80), title: clip(row.title || row.headline || "Dispatch", 180), blurb: clip(row.blurb || row.body || row.description || "", 500) };
   }).filter(Boolean);
   const predictions = (Array.isArray(raw.predictions) ? raw.predictions : []).slice(0, 6).map((item) => {
     const row = parseObject(item);
@@ -685,7 +693,12 @@ function fallbackChronicleEditorial(evidence) {
       ].filter(Boolean),
       predictions,
       upcomingFixtureFacts,
-      quoteOfMatchday: { quote: "The numbers are the story.", attribution: "The Khalpar Chronicle data desk" }
+      quoteOfMatchday: { quote: "The numbers are the story.", attribution: "The Khalpar Chronicle data desk" },
+      touchlineDispatches: [
+        firstResult ? { tag: "LATEST RESULT", title: `${firstResult.home} ${firstResult.score} ${firstResult.away}`, blurb: evidence.facts.latest_result } : null,
+        evidence.topScorers[0] ? { tag: "GOLDEN BOOT", title: `${evidence.topScorers[0].name} sets the pace`, blurb: evidence.facts.top_scorer } : null,
+        firstFixture ? { tag: "NEXT FIXTURE", title: `${firstFixture.home} vs ${firstFixture.away}`, blurb: evidence.facts.next_match } : null
+      ].filter(Boolean)
     },
     predictions,
     upcomingFixtureFacts
@@ -706,7 +719,7 @@ async function generateChronicleEditorial(seasonId) {
     "For every upcoming fixture, provide a cautious prediction using only the confirmed table and performance totals. Use exactly HOME WIN, DRAW, or AWAY WIN, and LOW, MEDIUM, or HIGH confidence. Label predictions as predictions, never as results.",
     "For every upcoming fixture, provide 2-4 verified facts with factIds. Do not invent form, injuries, rivalries, likely scorers, or historical meetings.",
     "Write an engaging but restrained Chronicle lead. Return JSON only in this shape:",
-    '{"headline":"8-180 chars","dek":"12-280 chars","bodyParagraphs":["2-6 grounded paragraphs"],"factIds":["existing fact key"],"predictions":[{"matchday":1,"date":"YYYY-MM-DD","fixture":"Home vs Away","pick":"HOME WIN|DRAW|AWAY WIN","confidence":"LOW|MEDIUM|HIGH","rationale":"...","factIds":["upcoming_1_home_table"]}],"upcomingFixtureFacts":[{"matchday":1,"date":"YYYY-MM-DD","fixture":"Home vs Away","facts":["..."],"factIds":["upcoming_1_home_table"]}],"editorial":{"edition":"...","dateline":"...","leadStory":{"tag":"...","kicker":"...","headline":"...","subdeck":"...","leadParagraph":"...","bodyParagraphs":["..."],"body":"...","accentColor":"#8B1E3F"},"bentoHighlights":[{"type":"FACT","tag":"...","title":"...","detail":"...","accentColor":"#8B1E3F"}],"predictions":[],"upcomingFixtureFacts":[]}}',
+    '{"headline":"8-180 chars","dek":"12-280 chars","bodyParagraphs":["2-6 grounded paragraphs"],"factIds":["existing fact key"],"predictions":[{"matchday":1,"date":"YYYY-MM-DD","fixture":"Home vs Away","pick":"HOME WIN|DRAW|AWAY WIN","confidence":"LOW|MEDIUM|HIGH","rationale":"...","factIds":["upcoming_1_home_table"]}],"upcomingFixtureFacts":[{"matchday":1,"date":"YYYY-MM-DD","fixture":"Home vs Away","facts":["..."],"factIds":["upcoming_1_home_table"]}],"editorial":{"edition":"...","dateline":"...","leadStory":{"tag":"...","kicker":"...","headline":"...","subdeck":"...","leadParagraph":"...","bodyParagraphs":["..."],"body":"...","accentColor":"#8B1E3F"},"bentoHighlights":[{"type":"FACT","tag":"...","title":"...","detail":"...","accentColor":"#8B1E3F"}],"touchlineDispatches":[{"tag":"...","title":"...","blurb":"..."}],"predictions":[],"upcomingFixtureFacts":[]}}',
     JSON.stringify({ EVIDENCE: evidence, FACTS: evidence.facts })
   ].join("\n\n");
   const controller = new AbortController();

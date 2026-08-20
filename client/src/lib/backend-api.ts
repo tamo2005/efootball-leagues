@@ -334,7 +334,7 @@ function jsonFacts(value: unknown): string[] {
 function jsonEditorial(value: unknown): ChronicleEditorial | undefined {
   const parsed = jsonObject(value);
   const raw = parsed && jsonObject(parsed.editorial) ? jsonObject(parsed.editorial) : parsed;
-  if (!raw || (!raw.leadStory && !Array.isArray(raw.bentoHighlights) && !raw.crisisWatch && !Array.isArray(raw.managerPressure) && !Array.isArray(raw.awards))) return undefined;
+  if (!raw || (!raw.leadStory && !Array.isArray(raw.bentoHighlights) && !raw.crisisWatch && !Array.isArray(raw.managerPressure) && !Array.isArray(raw.awards) && !Array.isArray(raw.touchlineDispatches) && !Array.isArray(raw.touchlineWires))) return undefined;
   const asNumber = (input: unknown, fallback = 0) => Number.isFinite(Number(input)) ? Number(input) : fallback;
   const leadRaw = jsonObject(raw.leadStory);
   const leadStatRaw = leadRaw ? jsonObject(leadRaw.statHighlight) : undefined;
@@ -351,7 +351,12 @@ function jsonEditorial(value: unknown): ChronicleEditorial | undefined {
   } : undefined;
   const bentoHighlights: ChronicleBentoHighlight[] = (Array.isArray(raw.bentoHighlights) ? raw.bentoHighlights : []).slice(0, 6).map((item) => {
     const row = jsonObject(item) || {};
-    const scorelineRaw = jsonObject(row.scoreline);
+    let scorelineRaw = jsonObject(row.scoreline);
+    if (!scorelineRaw && typeof row.score === "string" && typeof row.teams === "string") {
+      const scoreMatch = row.score.match(/(\d+)\s*[—-]\s*(\d+)/);
+      const teamMatch = row.teams.split(/\s+vs\s+/i).map((team) => team.trim()).filter(Boolean);
+      if (scoreMatch && teamMatch.length === 2) scorelineRaw = { home: teamMatch[0], homeScore: Number(scoreMatch[1]), awayScore: Number(scoreMatch[2]), away: teamMatch[1] };
+    }
     return {
       type: String(row.type || row.badge || "FACT").slice(0, 40),
       tag: String(row.tag || row.badge || "THE NUMBERS").slice(0, 80),
@@ -370,8 +375,11 @@ function jsonEditorial(value: unknown): ChronicleEditorial | undefined {
   const awards: ChronicleAward[] = (Array.isArray(raw.awards) ? raw.awards : []).slice(0, 6).map((item) => { const row = jsonObject(item) || {}; return { kind: String(row.kind || "TEAM_OF_WEEK").slice(0, 40), label: String(row.label || "WEEKLY FILE").slice(0, 60), name: String(row.name || row.player || row.team || "League figure").slice(0, 120), team: row.team ? String(row.team).slice(0, 120) : undefined, detail: String(row.detail || row.note || "").slice(0, 360) }; });
   const quoteRaw = jsonObject(raw.quoteOfMatchday);
   const quoteOfMatchday: ChronicleQuote | undefined = typeof raw.quoteOfMatchday === "string" ? { quote: String(raw.quoteOfMatchday).slice(0, 420) } : quoteRaw ? { quote: String(quoteRaw.quote || quoteRaw.text || "").slice(0, 420), attribution: quoteRaw.attribution ? String(quoteRaw.attribution).slice(0, 160) : undefined } : undefined;
-  const touchlineDispatches: ChronicleTouchlineDispatch[] = (Array.isArray(raw.touchlineDispatches) ? raw.touchlineDispatches : []).slice(0, 6).map((item) => { const row = jsonObject(item) || {}; return { tag: String(row.tag || "TOUCHLINE DISPATCH").slice(0, 80), title: String(row.title || "Dispatch").slice(0, 180), blurb: String(row.blurb || row.description || "").slice(0, 500) }; });
-  return { edition: raw.edition ? String(raw.edition).slice(0, 120) : undefined, dateline: raw.dateline ? String(raw.dateline).slice(0, 140) : undefined, leadStory, bentoHighlights, crisisWatch, managerPressure, awards, quoteOfMatchday: quoteOfMatchday?.quote ? quoteOfMatchday : undefined, touchlineDispatches };
+  const predictions: ChroniclePrediction[] = (Array.isArray(raw.predictions) ? raw.predictions : []).slice(0, 12).map((item) => { const row = jsonObject(item) || {}; const pick = String(row.pick || "DRAW").toUpperCase(); const confidence = String(row.confidence || "LOW").toUpperCase(); return { matchday: asNumber(row.matchday), date: String(row.date || "").slice(0, 40), fixture: String(row.fixture || "Upcoming fixture").slice(0, 180), pick: pick === "HOME WIN" || pick === "AWAY WIN" ? pick : "DRAW", confidence: confidence === "HIGH" || confidence === "MEDIUM" ? confidence : "LOW", rationale: String(row.rationale || "Calculated from confirmed standings and team performance only.").slice(0, 500), factIds: Array.isArray(row.factIds) ? row.factIds.map(String).slice(0, 12) : undefined }; });
+  const upcomingFixtureFacts: ChronicleUpcomingFixtureFact[] = (Array.isArray(raw.upcomingFixtureFacts) ? raw.upcomingFixtureFacts : []).slice(0, 12).map((item) => { const row = jsonObject(item) || {}; return { matchday: asNumber(row.matchday), date: String(row.date || "").slice(0, 40), fixture: String(row.fixture || "Upcoming fixture").slice(0, 180), facts: Array.isArray(row.facts) ? row.facts.map(String).map((fact) => fact.slice(0, 360)).filter(Boolean).slice(0, 8) : [], factIds: Array.isArray(row.factIds) ? row.factIds.map(String).slice(0, 12) : undefined }; });
+  const touchlineItems = Array.isArray(raw.touchlineDispatches) ? raw.touchlineDispatches : Array.isArray(raw.touchlineWires) ? raw.touchlineWires : [];
+  const touchlineDispatches: ChronicleTouchlineDispatch[] = touchlineItems.slice(0, 6).map((item) => { const row = jsonObject(item) || {}; return { tag: String(row.tag || "TOUCHLINE DISPATCH").slice(0, 80), title: String(row.title || row.headline || "Dispatch").slice(0, 180), blurb: String(row.blurb || row.body || row.description || "").slice(0, 500) }; });
+  return { edition: raw.edition ? String(raw.edition).slice(0, 120) : undefined, dateline: raw.dateline ? String(raw.dateline).slice(0, 140) : undefined, leadStory, bentoHighlights, crisisWatch, managerPressure, awards, quoteOfMatchday: quoteOfMatchday?.quote ? quoteOfMatchday : undefined, predictions, upcomingFixtureFacts, touchlineDispatches };
 }
 
 function jsonArray(value: unknown): Array<Record<string, unknown>> {
